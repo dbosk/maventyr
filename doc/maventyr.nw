@@ -1,0 +1,52 @@
+\documentclass[a4paper,oneside]{memoir}
+\maxtocdepth{subsection}
+\setsecnumdepth{subsection}
+\nouppercaseheads
+
+\usepackage{noweb}
+\noweboptions{breakcode,longchunks,longxref}
+
+\usepackage[hyphens]{url}
+\usepackage[colorlinks]{hyperref}
+\usepackage{authblk}
+
+\input{preamble.tex}
+
+\title{%
+  Majas matematiska äventyr\\
+  \large A curriculum-gamifying text adventure
+}
+\author{%
+  Daniel Bosk
+}
+\affil{%
+  KTH EECS\\
+  \email{daniel@bosk.se}
+}
+
+\begin{document}
+\frontmatter
+\maketitle
+\thispagestyle{empty}
+
+\begin{abstract}
+  \input{abstract.tex}
+\end{abstract}
+
+\vspace*{\fill}
+\VerbatimInput{../LICENSE}
+\clearpage
+
+\tableofcontents
+\clearpage
+
+\mainmatter
+
+\input{../src/maventyr/maventyr.tex}
+
+
+\backmatter
+\printbibliography
+
+
+\end{document}

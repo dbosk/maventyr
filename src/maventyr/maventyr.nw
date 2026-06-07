@@ -1,0 +1,146 @@
+\chapter{Overview}
+\label{ch:overview}
+
+\emph{Majas matematiska äventyr} ([[maventyr]]) is a text adventure in the
+spirit of the classic \texttt{adventure} game.  Where \texttt{adventure} hid
+treasure behind puzzles, [[maventyr]] hides progress behind \emph{learning}:
+the player explores a self-generating labyrinth and advances by solving tasks
+drawn from the Swedish school curriculum.  This document is the literate
+source --- the program and the reasoning behind it are developed together, so
+that a maintainer can read why the game is built the way it is, not merely
+what each function does.
+
+This chapter is the maintainer's map.  It states the one architectural rule
+that everything else depends on, sketches how the finished system decomposes
+into chapters, and then gives the buildable skeleton that the remaining
+chapters will grow into.  At this stage (milestone~M0) the package does almost
+nothing; its job is to \emph{compile, tangle, and test} cleanly so that every
+later chapter has a working scaffold to attach to.
+
+\section{The one rule: the core never speaks to the screen}
+
+Two interfaces are required of [[maventyr]]: a terminal version (the
+[[play]] subcommand) and a browser version (the [[serve]] subcommand).  A
+program that scatters \texttt{print} and \texttt{input} through its game logic
+can support exactly one of these, and bolting on the second means a rewrite.
+
+We therefore adopt a single, load-bearing rule:
+
+\begin{quotation}
+  The game core never imports a user interface and never calls \texttt{print}
+  or \texttt{input}.
+\end{quotation}
+
+The core instead exposes state and a \emph{command\,$\to$\,events} interface:
+a frontend turns a player action into a \emph{command}, hands it to the
+engine, and renders the \emph{events} the engine returns.  Because the engine
+neither reads nor writes the terminal, the terminal frontend and the web
+frontend can be two thin translators over the \emph{same} engine.  This rule
+is why the decomposition below separates \enquote{core} chapters from
+\enquote{interface} chapters, and it is the property each future chapter must
+preserve.
+
+\section{How the system decomposes}
+
+The finished game grows one chapter per concern, each in its own \texttt{.nw}
+file under \texttt{src/maventyr/} and each corresponding to an epic in the
+project's issue tracker.  Grouping the chapters by role makes the dependency
+order visible: the core must exist before anything can render or grade, and
+content sits on top of all of it.
+
+\begin{description}
+  \item[Core] \texttt{entities}, \texttt{locations}, \texttt{maps}, and the
+    \texttt{game} engine model the world and the command/event loop.  An
+    \emph{entity} is the one structure shared by characters and items; a
+    \emph{location} holds entities and links to other locations, possibly in
+    another map; a \emph{map} is a labyrinth of locations.
+  \item[Mechanics] \texttt{render} draws the discovered map, \texttt{questions}
+    grades answers through a per-subject grader (\texttt{sympy} for
+    mathematics), and \texttt{persistence} saves and restores the world
+    between runs.
+  \item[Interfaces] \texttt{ui\_terminal}, \texttt{ui\_web}, and \texttt{cli}
+    are the thin frontends and entry point --- the only place \texttt{print},
+    HTTP, and argument parsing live.
+  \item[Content] \texttt{curriculum} and \texttt{didactics} decide which task
+    to pose and how it is authored, and \texttt{content} loads the swappable
+    on-disk database whose language sets the game's language.
+\end{description}
+
+Each of these is introduced by its own issue and added as a sibling chapter;
+the document wrapper in \texttt{doc/} \texttt{\textbackslash input}s them in
+reading order.  Keeping this list in step with the chapters that actually
+exist is part of the cost of any structural change.
+
+\section{The generated module}
+
+The skeleton below is the whole of the package at milestone~M0.  We assemble
+it from named buckets so that later chapters extend the package by adding to a
+bucket rather than rewriting a monolith.  At M0 only two buckets carry
+content --- the module-level constants and functions; later chapters
+introduce an \texttt{imports} bucket and a \texttt{classes} bucket into this
+assembly at the point where the first import and the first class actually
+appear, so the module never references a bucket that has no content.
+
+<<[[__init__.py]]>>=
+"""Majas matematiska äventyr --- a curriculum-gamifying text adventure.
+
+This package is generated from the literate source ``maventyr.nw``.  Edit the
+``.nw`` file, not the generated ``.py``.
+"""
+
+<<constants>>
+
+<<functions>>
+@
+
+\section{Version}
+
+We expose the package version as a module attribute so that callers --- the
+save-format versioning in \texttt{persistence}, a future \texttt{--version}
+flag, release tooling --- have a single authoritative source rather than
+duplicating the literal.  It mirrors the version declared in
+\texttt{pyproject.toml}.
+
+<<constants>>=
+__version__ = "0.1"
+@
+
+\section{A first, verifiable behaviour}
+
+Even an empty game should be able to greet its player, and we use that
+greeting to prove the build pipeline end to end: the chunk below tangles to
+Python, the package imports, and the test that follows runs.  The greeting is
+a single Swedish constant rather than a literal inside the function, because
+the game's default language is Swedish and the eventual content database will
+override such strings; keeping the text in a named constant marks it as
+translatable rather than incidental.
+
+<<constants>>=
+WELCOME = "Välkommen till Majas matematiska äventyr!"
+@
+
+<<functions>>=
+def greeting():
+    """Return the game's welcome message (Swedish by default)."""
+    return WELCOME
+@
+
+Let us verify that the package imports and that the greeting is the Swedish
+welcome --- the smoke test that guards the M0 scaffold.  We read the version
+through the module object rather than the star-import, because [[*]] omits
+dunder names like [[__version__]]; the public names [[greeting]] and
+[[WELCOME]] come in through the star-import as usual.
+
+<<test [[maventyr.py]]>>=
+import maventyr
+from maventyr import *
+
+
+def test_has_version():
+    assert isinstance(maventyr.__version__, str)
+
+
+def test_greeting_is_swedish_welcome():
+    assert greeting() == WELCOME
+    assert "äventyr" in greeting()
+@

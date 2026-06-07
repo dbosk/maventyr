@@ -1,0 +1,37 @@
+[project]
+name = "maventyr"
+version = "0.1"
+description = "Majas matematiska äventyr — a curriculum-gamifying text adventure"
+authors = [
+    {name = "Daniel Bosk"}
+]
+license = {text = "MIT"}
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "sympy",
+]
+
+
+[tool.poetry]
+packages = [{include = "maventyr", from = "src"}]
+include = [
+  { path = "src/**/*.py", format = "wheel" },
+]
+exclude = [
+  "src/maventyr/.gitignore",
+  "src/maventyr/Makefile",
+  "src/maventyr/*.nw",
+  "src/maventyr/*.tex",
+  "src/maventyr/CLAUDE.md",
+  "src/maventyr/ltxobj",
+]
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[dependency-groups]
+dev = [
+    "pytest (>=9.0.2,<10.0.0)"
+]
