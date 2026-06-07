@@ -1,0 +1,233 @@
+\chapter{The game engine}
+\label{ch:game}
+
+The Overview promised a core that knows the rules but never speaks to the
+screen (\cref{ch:overview}).  This chapter delivers the smallest such core:
+the boundary every frontend will translate across.  It has three moving
+parts, and the chapter is really the relationship between them:
+
+\begin{description}
+  \item[Commands] name what the player wants to do, stripped of how they
+    said it --- the input side of the boundary.
+  \item[Events] name what happened as a result, stripped of how it will be
+    shown --- the output side.
+  \item[The engine] is the function between the two: it accepts a command
+    and returns the events that command produced.
+\end{description}
+
+Because the engine speaks only these two vocabularies, the terminal and web
+frontends can be thin translators over one engine rather than two divergent
+programs: each turns keystrokes or clicks into Commands and renders Events as
+text or HTML.  At this milestone the world is still empty --- locations,
+items and maps arrive in later chapters --- so the engine can do little.
+What it must do correctly \emph{now} is establish the
+\emph{command\,$\to$\,events} contract and the dispatch shape that every
+later command plugs into.
+
+We assemble the module from named buckets, as the package root does, but this
+is the first chapter to need an [[imports]] bucket and a [[classes]] bucket,
+so we introduce them here.  The module docstring restates the one rule for a
+reader who opens [[game.py]] without the woven document beside it.
+
+<<[[game.py]]>>=
+"""The presentation-agnostic game core.
+
+Defines the Command and Event types and the Engine that maps commands to
+events.  This module imports no user interface and calls neither ``print``
+nor ``input``: a frontend turns player input into a Command, hands it to the
+Engine, and renders the Events the Engine returns.
+"""
+
+<<imports>>
+
+<<constants>>
+
+<<classes>>
+@
+
+The engine reuses the package-level language machinery
+(\cref{ch:overview}) rather than inventing its own, so the whole game shares
+one default and one fallback rule.  Importing [[WELCOME]] as well lets the
+engine greet the player without restating wording already defined for the
+package's own greeting.
+
+<<imports>>=
+from dataclasses import dataclass
+
+from maventyr import DEFAULT_LANGUAGE, WELCOME, localize
+@
+
+\section{Commands: what the player wants to do}
+
+A command is a single player intention --- look around, go north, answer a
+question --- captured as data, with no trace of whether it arrived as a typed
+line, a button press, or a script.  We model the family as a base class with
+one frozen dataclass per intention, rather than a string verb plus a bag of
+arguments, because each intention carries different data and the frontends
+dispatch on it: matching on [[Look]] versus a future [[Go]] and binding their
+fields is clearer and safer than switching on a string and indexing a dict.
+
+Freezing the dataclasses makes commands hashable and compared by value, and
+safe to keep in a log or an undo history --- a command records what was
+asked, and nothing should mutate it after the fact.
+
+<<classes>>=
+@dataclass(frozen=True)
+class Command:
+    """Base class for a player's intention, independent of any frontend."""
+@
+
+The parser in a later chapter will produce these from text; for now we need
+one concrete command to exercise the engine.  [[Look]] is the natural choice:
+it asks only to perceive the surroundings, so it carries no data and stays
+meaningful once there is a world to describe.
+
+<<classes>>=
+@dataclass(frozen=True)
+class Look(Command):
+    """Request a description of the player's current surroundings."""
+@
+
+\section{Events: what the engine reports}
+
+An event is something the engine reports as having happened, again as data a
+frontend renders however it likes.  Keeping events inert --- text to show,
+not a call that shows it --- is exactly what lets one engine drive both a
+terminal and a browser: the engine decides \emph{what} to say, each frontend
+decides \emph{how}.
+
+<<classes>>=
+@dataclass(frozen=True)
+class Event:
+    """Base class for something the engine reports to the frontend."""
+@
+
+The one event we need now carries a line of prose for the player.  Later
+chapters add richer events --- a move, a blocked door, a posed question ---
+but each is just another frozen dataclass the frontends learn to render.
+
+<<classes>>=
+@dataclass(frozen=True)
+class Message(Event):
+    """A line of text for the player to read."""
+
+    text: str
+@
+
+\section{The engine}
+
+Before the engine itself we need one more localized string: the reply when
+the player asks for something the engine cannot yet do.  We store it as a
+constant directory, like every other user-facing string, so the
+not-understood reply is translated in step with the rest of the game.
+
+<<constants>>=
+DONT_UNDERSTAND = {
+    "sv": "Jag förstår inte vad du menar.",
+    "en": "I don't understand what you mean.",
+}
+@
+
+The engine holds the one piece of state it can have at this milestone: the
+language it speaks.  We keep the language on the engine rather than threading
+it through every call because it is a property of the running game, not of an
+individual command; later the command-line interface reads it from
+configuration and passes it here, and the engine localizes every event it
+emits in that one language.
+
+<<classes>>=
+class Engine:
+    """Maps player commands to the events they produce.
+
+    The engine speaks no user interface: callers pass a Command to
+    ``handle`` and render the returned Events themselves.
+    """
+
+    def __init__(self, language=DEFAULT_LANGUAGE):
+        self.language = language
+
+    <<engine methods>>
+@
+
+\subsection{Handling a command}
+
+[[handle]] is the whole command\,$\to$\,events contract in one method: a
+command goes in, a list of events comes out.  We dispatch with a [[match]]
+statement because adding a command later means adding a [[case]] --- the
+structure is the extension point every future chapter reuses, and pattern
+matching binds a command's fields in the same step that selects it.
+
+The known arm is a placeholder for now.  Until there is a world to describe,
+[[Look]] borrows the welcome greeting as a stand-in; once locations exist
+(\cref{ch:overview} lists them among the later chapters) it will return the
+current location's description instead.  We wire the arm up anyway so the
+contract and its test exist before the content does.
+
+The wildcard arm is deliberate.  A command whose type the engine does not yet
+implement is not an error to crash on but a feature not built --- so the
+engine replies, in the player's language, that it did not understand, and the
+game plays on.  This is a different concern from the parser's job of
+rejecting unparseable \emph{text}: by the time a command reaches [[handle]]
+it is already a well-formed [[Command]]; the wildcard catches \emph{kinds} of
+command the engine has no rule for yet.
+
+<<engine methods>>=
+def handle(self, command):
+    """Return the list of events produced by ``command``."""
+    match command:
+        case Look():
+            return [Message(localize(WELCOME, self.language))]
+        case _:
+            return [Message(localize(DONT_UNDERSTAND, self.language))]
+@
+
+Let's verify both arms, and that the engine honours its language.  A [[Look]]
+is greeted in the engine's language --- Swedish by default, English when so
+configured --- which checks the known-command path and proves the language is
+a real seam rather than a hard-coded default:
+
+<<test [[game.py]]>>=
+import inspect
+
+import maventyr.game
+from maventyr.game import *
+
+
+def test_look_is_greeted_in_default_language():
+    assert Engine().handle(Look()) == [Message(WELCOME["sv"])]
+
+
+def test_look_is_greeted_in_configured_language():
+    assert Engine(language="en").handle(Look()) == [Message(WELCOME["en"])]
+@
+
+An unhandled command falls through to the wildcard and yields the
+not-understood reply, still localized; and whatever the command, [[handle]]
+always returns a list of [[Event]]s, the shape every frontend relies on:
+
+<<test [[game.py]]>>=
+def test_unknown_command_is_not_understood():
+    class Jump(Command):
+        pass
+
+    assert Engine().handle(Jump()) == [Message(DONT_UNDERSTAND["sv"])]
+
+
+def test_handle_returns_a_list_of_events():
+    events = Engine().handle(Look())
+    assert isinstance(events, list)
+    assert all(isinstance(event, Event) for event in events)
+@
+
+Finally, the rule that justifies this whole chapter: the core must touch no
+user interface.  We assert it mechanically by reading the tangled module's
+own source and checking that neither [[print]] nor [[input]] is called, so a
+future change that smuggles I/O into the core fails the test suite rather than
+a later architecture review:
+
+<<test [[game.py]]>>=
+def test_core_calls_no_print_or_input():
+    source = inspect.getsource(maventyr.game)
+    assert "print(" not in source
+    assert "input(" not in source
+@

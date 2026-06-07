@@ -105,31 +105,80 @@ duplicating the literal.  It mirrors the version declared in
 __version__ = "0.1"
 @
 
+\section{Speaking the player's language}
+
+[[maventyr]] is Swedish-first, but the curriculum itself sometimes demands
+another language: an English topic is taught in English, so the characters
+posing it must answer in English too.  Rather than bind each user-facing
+string to one language, we store it as a \emph{constant directory} --- a
+mapping from language code to text --- and resolve the active language only at
+the moment we show it.  This keeps the Swedish and English wordings side by
+side in the source, where a translator sees both at once and neither can drift
+silently out of step with the other.
+
+One language is privileged as the default.  Content is authored Swedish-first,
+so a Swedish entry always exists while a translation may not yet; a lookup
+against a missing language must therefore degrade to the default rather than
+fail mid-game.  We name that default once, so the fallback rule below and
+every [[language=]] parameter in the package draw on a single authority
+instead of repeating the literal \enquote{sv}.
+
+<<constants>>=
+DEFAULT_LANGUAGE = "sv"
+@
+
+The lookup encodes the fallback directly: ask the directory for the requested
+language, and substitute the default's text when that key is absent.  Because
+the default entry is assumed always present, a caller can localize a
+half-translated directory without first guarding against a missing key --- the
+fallback, not an exception, is the failure mode.
+
+<<functions>>=
+def localize(table, language=DEFAULT_LANGUAGE):
+    """Return the ``language`` text from a ``{language: text}`` mapping.
+
+    Falls back to ``DEFAULT_LANGUAGE`` when ``table`` has no entry for
+    ``language``, so a partially translated mapping still yields text.
+    """
+    return table.get(language, table[DEFAULT_LANGUAGE])
+@
+
 \section{A first, verifiable behaviour}
 
 Even an empty game should be able to greet its player, and we use that
 greeting to prove the build pipeline end to end: the chunk below tangles to
-Python, the package imports, and the test that follows runs.  The greeting is
-a single Swedish constant rather than a literal inside the function, because
-the game's default language is Swedish and the eventual content database will
-override such strings; keeping the text in a named constant marks it as
-translatable rather than incidental.
+Python, the package imports, and the test that follows runs.  The welcome
+message is our first constant directory --- the same Swedish text as before,
+now paired with its English wording so the greeting honours the player's
+language from the very first line the game shows.
 
 <<constants>>=
-WELCOME = "Välkommen till Majas matematiska äventyr!"
+WELCOME = {
+    "sv": "Välkommen till Majas matematiska äventyr!",
+    "en": "Welcome to Maja's mathematical adventure!",
+}
 @
+
+The greeting resolves that directory through [[localize]], defaulting to
+Swedish.  We route even this trivial string through the shared helper rather
+than indexing the directory directly, so that every user-facing string ---
+not just the ones a frontend happens to remember --- inherits the same
+default-language fallback by construction.
 
 <<functions>>=
-def greeting():
-    """Return the game's welcome message (Swedish by default)."""
-    return WELCOME
+def greeting(language=DEFAULT_LANGUAGE):
+    """Return the game's welcome message in ``language``.
+
+    Defaults to Swedish; an unknown language falls back to Swedish too.
+    """
+    return localize(WELCOME, language)
 @
 
-Let us verify that the package imports and that the greeting is the Swedish
-welcome --- the smoke test that guards the M0 scaffold.  We read the version
+Let us verify that the package imports and that the greeting speaks the right
+language --- the smoke test that guards the M0 scaffold.  We read the version
 through the module object rather than the star-import, because [[*]] omits
-dunder names like [[__version__]]; the public names [[greeting]] and
-[[WELCOME]] come in through the star-import as usual.
+dunder names like [[__version__]]; the public names [[greeting]], [[WELCOME]],
+[[localize]] and [[DEFAULT_LANGUAGE]] come in through the star-import as usual.
 
 <<test [[maventyr.py]]>>=
 import maventyr
@@ -141,6 +190,21 @@ def test_has_version():
 
 
 def test_greeting_is_swedish_welcome():
-    assert greeting() == WELCOME
+    assert greeting() == WELCOME["sv"]
     assert "äventyr" in greeting()
+@
+
+The greeting earns its [[language]] parameter only if a translation actually
+changes the output and a missing one does not break it.  We check both halves:
+an English greeting differs from the Swedish default, and an unknown language
+resolves back to the default rather than raising.
+
+<<test [[maventyr.py]]>>=
+def test_greeting_translates_to_english():
+    assert greeting("en") == WELCOME["en"]
+    assert greeting("en") != greeting("sv")
+
+
+def test_unknown_language_falls_back_to_default():
+    assert greeting("xx") == greeting(DEFAULT_LANGUAGE)
 @
