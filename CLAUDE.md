@@ -78,7 +78,13 @@ in the commit that delivers them, so "open" means "remaining".
 ## Conventions
 
 - **Swedish-first** content; user-facing strings belong in named constants /
-  the content database (not literals), so they are translatable.
+  the content database (not literals), so they are translatable. Concretely,
+  such strings are *constant directories* — `{lang: str}` dicts (`"sv"` +
+  `"en"`) resolved via `localize(table, language)` (in `maventyr.nw`), which
+  falls back to `DEFAULT_LANGUAGE` (`"sv"`) for missing translations. The
+  active language lives on the `Engine`; the core never reads config — the
+  CLI injects the language. See the "Speaking the player's language" and
+  engine chapters for the rationale.
 - **Pluggable graders per subject** (sympy for maths; keyword/rubric/MCQ/
   reading-comprehension for others) — do not hardcode maths-only grading.
 - **Tasks are authored from the subject-didactics research literature**
