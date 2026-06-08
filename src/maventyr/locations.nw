@@ -1,0 +1,440 @@
+\chapter{Locations}
+\label{ch:locations}
+
+A \emph{location} is a place the player can stand in: a room in the labyrinth,
+a clearing, a cave.  It holds the entities currently present
+(\cref{ch:entities}) and links to the places a player can move to from here ---
+the maze chapter will wire those links into a labyrinth and the map chapter
+will walk them.
+
+This chapter is the counterpoint to the Entities chapter, and the contrast is
+the point.  An [[Entity]] is frozen: authored content that never changes once
+written.  A [[Location]] is its opposite on every axis, and for reasons worth
+stating before any code:
+
+\begin{description}
+  \item[It is wired after construction.] A labyrinth is a graph with cycles ---
+    going north from one room reaches a second whose south returns to the
+    first.  A value sealed in its constructor cannot tie such a knot, so
+    locations are created first and \emph{linked} afterwards; the links must
+    therefore be mutable.
+  \item[Its contents change.] The Entities chapter deferred the act of
+    \emph{taking} an item to \enquote{the world that holds one}
+    (\cref{ch:entities}); this chapter is that world.  When the player pockets
+    a key it leaves the room, so a location's entities are mutable game state,
+    not fixed content.
+  \item[It is identified, not compared.] Two rooms with identical descriptions
+    are still two different rooms --- a location is the node it \emph{is}, not
+    the data it carries.  We therefore compare locations by identity rather
+    than by value, which as a bonus keeps them hashable for the discovery sets
+    a later chapter needs (\cref{ch:overview}) and sidesteps a non-terminating
+    value comparison over the cyclic link graph.
+\end{description}
+
+So where [[Entity]] is immutable content, [[Location]] is mutable world: the
+structure those contents and links hang on.  The module borrows the package's
+language helpers and the engine's [[Message]] event, exactly as the entities
+module does, and imports nothing else --- the core still touches no user
+interface.
+
+<<[[locations.py]]>>=
+"""World locations --- the rooms the player moves between.
+
+A Location holds the entities currently in it and links to neighbouring
+locations, possibly in another map.  Unlike an Entity, a Location is mutable:
+its links are wired up after construction and its contents change as the player
+acts.  This module imports no user interface and calls neither ``print`` nor
+``input``.
+"""
+
+<<imports>>
+
+<<constants>>
+
+<<functions>>
+
+<<classes>>
+@
+
+<<imports>>=
+from dataclasses import dataclass, field
+
+from maventyr import DEFAULT_LANGUAGE, localize
+from maventyr.game import Message
+@
+
+\section{The location}
+
+The fields split cleanly into the three things the chapter opening promised a
+location ties together.  The [[id]] is the stable handle, as it is for an
+entity --- the maze generator, the saved game and the renderer all refer to a
+room by it.  [[name]] and [[description]] are the localizable content shown
+when the place is named or looked at.  The last two fields are the mutable
+world: [[entities]] is what is currently here, and [[exits]] maps a direction
+to the [[Location]] it leads to.
+
+Both mutable fields default to \emph{empty}, built fresh per instance through
+[[field(default_factory=...)]] rather than a literal [[[]]] or [[{}]]: a bare
+mutable default would be shared by every location ever created, so placing a
+key in one cave would silently place it in all of them.  A new room therefore
+starts empty and is furnished and linked afterwards.
+
+<<classes>>=
+@dataclass(eq=False, repr=False)
+class Location:
+    """A place the player can stand in, holding entities and exits.
+
+    Mutable, unlike an Entity: links are wired after construction and the
+    entities present change as the player acts.  Compared by identity, so two
+    rooms with the same content are still distinct rooms.
+    """
+
+    id: str
+    name: dict
+    description: dict
+    entities: list = field(default_factory=list)
+    exits: dict = field(default_factory=dict)
+
+    <<location methods>>
+@
+
+The [[eq=False]] is the third bullet of the opening made mechanical: it tells
+the dataclass \emph{not} to synthesise value equality, so a location keeps the
+object's own identity-based [[==]] and hash.  This is what we want on a graph
+of nodes --- a room equals only itself --- and it is also what makes the
+mutable, cyclic structure safe to compare and to drop into a set, neither of
+which a value comparison could do without recursing forever.  We turn off the
+generated [[repr]] for the same reason and supply our own that names the node
+by its [[id]], so printing a room while debugging the maze shows the room, not
+an unbounded walk over its neighbours.
+
+<<location methods>>=
+def __repr__(self):
+    return f"Location({self.id!r})"
+@
+
+We verify the content is held, and pin the identity semantics that the rest of
+the chapter leans on: distinct rooms are unequal even when their content
+matches, a room equals itself, and a room can live in a set.
+
+<<test [[locations.py]]>>=
+from maventyr.locations import *
+from maventyr.entities import Entity
+from maventyr.game import Event, Message
+
+
+def _place(**overrides):
+    fields = dict(
+        id="grotta",
+        name={"sv": "grottan", "en": "the cave"},
+        description={"sv": "En dunkel grotta.", "en": "A dim cave."},
+    )
+    fields.update(overrides)
+    return Location(**fields)
+
+
+def test_construction_holds_content():
+    here = _place()
+    assert here.id == "grotta"
+    assert localize(here.name, "en") == "the cave"
+    assert localize(here.description, "sv") == "En dunkel grotta."
+
+
+def test_distinct_rooms_are_unequal_even_with_equal_content():
+    assert _place() != _place()
+
+
+def test_a_room_equals_itself_and_is_hashable():
+    here = _place()
+    assert here == here
+    assert here in {here}
+@
+
+\section{Linking locations}
+
+Movement is the map chapter's job (\cref{ch:overview}); a location's part is
+only to know which way leads where.  We store that as a mapping from a
+direction to the [[Location]] reached --- and storing the destination as a
+direct object reference, not an index into \enquote{this map}, is what makes a
+cross-map link cost nothing extra: a door into another map is the same
+assignment as a step to the room next door.  The acceptance's
+\enquote{including cross-map links} needs no machinery beyond this.
+
+The primitive is one-way.  [[link]] records that one direction leads somewhere;
+it does not assume the way back exists, because a one-way door or a portal into
+another map genuinely has no reciprocal.
+
+<<location methods>>=
+def link(self, direction, destination):
+    """Add a one-way exit ``direction`` leading to ``destination``."""
+    self.exits[direction] = destination
+@
+
+Most passages in a maze \emph{are} two-way, though, so re-stating both halves
+at every carve would be noise.  [[connect]] is the convenience that wires the
+pair, taking the return direction as [[opposite]] rather than deriving it: the
+geometry of which way is \enquote{back} belongs to the maze generator that
+knows the grid, not to a location that knows only its own doorways.  Keeping
+that knowledge out of here is why [[connect]] needs no table of opposites.
+
+<<location methods>>=
+def connect(self, direction, opposite, destination):
+    """Link to ``destination`` both ways, ``opposite`` being the return.
+
+    A convenience over two ``link`` calls for the common two-way passage;
+    use ``link`` directly for a one-way door or a cross-map portal.
+    """
+    self.link(direction, destination)
+    destination.link(opposite, self)
+@
+
+Looking up a neighbour returns the room or [[None]] when there is no exit that
+way.  A missing exit is not an error to raise but a wall to bump into ---
+ordinary play --- and the map chapter, not the location, decides how to tell
+the player they cannot go there.
+
+<<location methods>>=
+def neighbor(self, direction):
+    """Return the location reached by ``direction``, or ``None``."""
+    return self.exits.get(direction)
+@
+
+A one-way [[link]] is visible one way only; [[connect]] makes both halves
+resolve; and an unlinked direction is a wall:
+
+<<test [[locations.py]]>>=
+def test_link_is_one_way():
+    here = _place(id="här")
+    there = _place(id="där")
+    here.link("norr", there)
+    assert here.neighbor("norr") is there
+    assert there.neighbor("söder") is None
+
+
+def test_connect_links_both_ways():
+    here = _place(id="här")
+    there = _place(id="där")
+    here.connect("norr", "söder", there)
+    assert here.neighbor("norr") is there
+    assert there.neighbor("söder") is here
+
+
+def test_neighbor_of_a_wall_is_none():
+    assert _place().neighbor("norr") is None
+@
+
+The cross-map claim is just the reference at work: a location in one map links
+to a location in another with the same [[link]], and the neighbour resolves to
+that very object.  Here [[cave]] and [[hall]] stand for rooms in two different
+maps, joined by a named door:
+
+<<test [[locations.py]]>>=
+def test_links_cross_map_by_object_reference():
+    cave = _place(id="grotta-i-karta-a")
+    hall = _place(id="sal-i-karta-b")
+    cave.link("dörr", hall)
+    assert cave.neighbor("dörr") is hall
+@
+
+\subsection{Which ways can I go?}
+
+A location also has to report the directions it offers --- the renderer and the
+[[look]] below both ask.  We return them sorted so the listing is
+deterministic; a \emph{meaningful} order (north before east, say) is a
+presentation choice that belongs to the renderer, not to the bare set of
+doorways.
+
+<<location methods>>=
+def directions(self):
+    """Return the available exit directions, sorted for stable output."""
+    return sorted(self.exits)
+@
+
+<<test [[locations.py]]>>=
+def test_directions_are_listed_in_sorted_order():
+    here = _place()
+    here.link("öster", _place(id="ö"))
+    here.link("norr", _place(id="n"))
+    assert here.directions() == ["norr", "öster"]
+@
+
+\section{Holding entities}
+
+The world chapter is where entities finally come and go.  [[add_entity]] is how
+the maze-population step (\cref{ch:overview}) drops a character or item into a
+room, and [[remove_entity]] is the other end of the [[take]] the Entities
+chapter promised but could not finish: taking a key calls this to lift it out
+of the room.  We keep [[entities]] a list rather than a set because order is
+content --- the sequence things were placed in is the sequence [[look]] reads
+them back.
+
+<<location methods>>=
+def add_entity(self, entity):
+    """Place ``entity`` in this location."""
+    self.entities.append(entity)
+
+def remove_entity(self, entity):
+    """Remove ``entity`` from this location."""
+    self.entities.remove(entity)
+@
+
+<<test [[locations.py]]>>=
+def test_add_entity_places_it_in_the_location():
+    key = Entity(
+        id="nyckel",
+        name={"sv": "en nyckel"},
+        description={"sv": "En rostig nyckel."},
+    )
+    here = _place()
+    here.add_entity(key)
+    assert key in here.entities
+
+
+def test_remove_entity_takes_it_out():
+    key = Entity(
+        id="nyckel",
+        name={"sv": "en nyckel"},
+        description={"sv": "En rostig nyckel."},
+    )
+    here = _place(entities=[key])
+    here.remove_entity(key)
+    assert key not in here.entities
+@
+
+\section{Looking around}
+
+Looking at a location mirrors looking at an entity (\cref{ch:entities}) --- it
+returns a list of events for a frontend to render --- but a place has more to
+say than a thing: what it looks like, who and what is here, and where you can
+go.  We answer with up to three lines.
+
+Before [[look]] we need to turn an exit's direction token into a word the
+player reads.  The token is a stable key --- the Swedish direction, since the
+content is Swedish-first --- and [[direction_name]] resolves it through the
+[[DIRECTIONS]] directory so the same token reads as \enquote{norr} or
+\enquote{north} as the language asks.  When a token is absent (a named exit
+like a door, or one not yet translated) it falls back to showing the token
+itself rather than failing, so a half-authored world still renders.  We make
+the helper public because the renderer will localize directions the same way.
+
+<<functions>>=
+def direction_name(token, language=DEFAULT_LANGUAGE):
+    """Return the player-facing name of an exit ``token``.
+
+    Resolves ``token`` through ``DIRECTIONS``, falling back to the token
+    itself when it has no entry, so a named or untranslated exit still shows.
+    """
+    return localize(DIRECTIONS.get(token, {DEFAULT_LANGUAGE: token}), language)
+@
+
+<<constants>>=
+DIRECTIONS = {
+    "norr": {"sv": "norr", "en": "north"},
+    "söder": {"sv": "söder", "en": "south"},
+    "öster": {"sv": "öster", "en": "east"},
+    "väster": {"sv": "väster", "en": "west"},
+}
+@
+
+The description is unconditional --- every place looks like something.  The
+other two lines are conditional, and deliberately so: an empty
+\enquote{Här finns:} or \enquote{Utgångar:} would read as a bug, so an empty
+room is described in silence and only a populated one announces its contents or
+its ways out.  The connectors are constant directories like every other
+user-facing string, with a [[{...}]] slot for the comma-joined list.
+
+<<constants>>=
+HERE = {
+    "sv": "Här finns: {items}.",
+    "en": "Here is: {items}.",
+}
+EXITS = {
+    "sv": "Utgångar: {dirs}.",
+    "en": "Exits: {dirs}.",
+}
+@
+
+<<location methods>>=
+def look(self, language=DEFAULT_LANGUAGE):
+    """Return events describing the location, its contents and its exits."""
+    events = [Message(localize(self.description, language))]
+    if self.entities:
+        items = ", ".join(
+            localize(entity.name, language) for entity in self.entities
+        )
+        events.append(Message(localize(HERE, language).format(items=items)))
+    if self.exits:
+        dirs = ", ".join(
+            direction_name(token, language) for token in self.directions()
+        )
+        events.append(Message(localize(EXITS, language).format(dirs=dirs)))
+    return events
+@
+
+A furnished room reports all three lines, and reports them in the player's
+language --- the entity names localized, the directions localized through
+[[DIRECTIONS]], in the sorted order [[directions]] fixed:
+
+<<test [[locations.py]]>>=
+def test_look_reports_description_contents_and_exits():
+    horse = Entity(
+        id="häst",
+        name={"sv": "en häst", "en": "a horse"},
+        description={"sv": "En lurvig häst.", "en": "A shaggy horse."},
+    )
+    key = Entity(
+        id="nyckel",
+        name={"sv": "en nyckel", "en": "a key"},
+        description={"sv": "En rostig nyckel.", "en": "A rusty key."},
+        takeable=True,
+    )
+    here = _place(entities=[horse, key])
+    here.connect("norr", "söder", _place(id="norr-rum"))
+    here.connect("öster", "väster", _place(id="öster-rum"))
+
+    assert here.look("sv") == [
+        Message("En dunkel grotta."),
+        Message("Här finns: en häst, en nyckel."),
+        Message("Utgångar: norr, öster."),
+    ]
+    assert here.look("en") == [
+        Message("A dim cave."),
+        Message("Here is: a horse, a key."),
+        Message("Exits: north, east."),
+    ]
+@
+
+An empty dead-end says only what it looks like --- no contents line, no exits
+line:
+
+<<test [[locations.py]]>>=
+def test_look_of_an_empty_dead_end_is_just_its_description():
+    assert _place().look("sv") == [Message("En dunkel grotta.")]
+@
+
+A named exit with no [[DIRECTIONS]] entry --- the cross-map door from earlier
+--- still renders, falling back to its own token in either language:
+
+<<test [[locations.py]]>>=
+def test_named_exit_falls_back_to_its_token():
+    here = _place()
+    here.link("dörr", _place(id="annan-karta"))
+    assert here.look("sv")[-1] == Message("Utgångar: dörr.")
+    assert here.look("en")[-1] == Message("Exits: dörr.")
+@
+
+Finally the two invariants every interaction in the core upholds: it returns a
+list of [[Event]]s, the shape both frontends render, and an unknown language
+falls back to the default rather than raising:
+
+<<test [[locations.py]]>>=
+def test_look_returns_a_list_of_events():
+    events = _place().look()
+    assert isinstance(events, list)
+    assert all(isinstance(event, Event) for event in events)
+
+
+def test_look_falls_back_to_default_language():
+    here = _place()
+    assert here.look("xx") == here.look(DEFAULT_LANGUAGE)
+@
