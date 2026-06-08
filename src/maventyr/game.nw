@@ -18,11 +18,12 @@ parts, and the chapter is really the relationship between them:
 Because the engine speaks only these two vocabularies, the terminal and web
 frontends can be thin translators over one engine rather than two divergent
 programs: each turns keystrokes or clicks into Commands and renders Events as
-text or HTML.  At this milestone the world is still empty --- locations,
-items and maps arrive in later chapters --- so the engine can do little.
-What it must do correctly \emph{now} is establish the
-\emph{command\,$\to$\,events} contract and the dispatch shape that every
-later command plugs into.%
+text or HTML.  The world the engine drives --- the locations, items and maps
+of later chapters --- is \emph{handed to} it rather than imported by it, so
+the core names no concrete world type and one engine can drive any labyrinth.
+What this chapter establishes is the \emph{command\,$\to$\,events} contract,
+the dispatch shape that every later command plugs into, and the headless loop
+that turns that contract into a playable game.%
 \ltnote{%
   We define the Command and Event families before the engine that maps between
   them.  The engine's contract only reads clearly once both its input and output
@@ -45,10 +46,10 @@ it.
 """The presentation-agnostic game core.
 
 Defines the Command and Event types, the parser that turns a line of text
-into a Command, and the Engine that maps commands to events.  This module
-imports no user interface and calls neither ``print`` nor ``input``: a
-frontend parses player input into a Command, hands it to the Engine, and
-renders the Events the Engine returns.
+into a Command, and the Engine that maps commands to events and drives a
+headless turn loop over a world.  This module imports no user interface and
+calls neither ``print`` nor ``input``: a frontend parses player input into a
+Command, hands it to the Engine, and renders the Events the Engine returns.
 """
 
 <<imports>>
@@ -145,22 +146,30 @@ DONT_UNDERSTAND = {
 }
 @
 
-The engine holds the one piece of state it can have at this milestone: the
-language it speaks.  We keep the language on the engine rather than threading
-it through every call because it is a property of the running game, not of an
-individual command; later the command-line interface reads it from
-configuration and passes it here, and the engine localizes every event it
-emits in that one language.
+The engine holds two pieces of state, each a property of the running game
+rather than of any single command: the \emph{world} it drives and the
+\emph{language} it speaks.  The world is a [[Map]] (\cref{ch:maps}) ---
+\emph{handed in} by the caller, never imported, which is the whole reason the
+core stays free of any concrete world type and the dependency runs from the
+world to the engine and never back.  The language is kept here for the same
+\enquote{property of the game} reason: later the command-line interface reads
+it from configuration and passes it in, and the engine localizes every event
+it emits in that one language.  Both take a neutral default --- no world, the
+package's default language --- so the contract tests below can construct a bare
+engine, while the loop and the world-touching commands supply a real [[Map]].
 
 <<classes>>=
 class Engine:
     """Maps player commands to the events they produce.
 
-    The engine speaks no user interface: callers pass a Command to
-    ``handle`` and render the returned Events themselves.
+    Constructed with the world it drives and the language it speaks. The
+    engine touches no user interface: a caller passes a Command to ``handle``
+    (or a script of input lines to ``run``) and renders the returned Events
+    itself.
     """
 
-    def __init__(self, language=DEFAULT_LANGUAGE):
+    def __init__(self, world=None, language=DEFAULT_LANGUAGE):
+        self.world = world
         self.language = language
 
     <<engine methods>>
@@ -193,21 +202,25 @@ a well-formed [[Command]]; the wildcard catches \emph{kinds} of command the
 engine has no rule for yet, while the parser's own failure --- met further down
 this chapter --- is a line that named no command at all.
 
-The first recognised case is [[Look]].  Until there is a world to describe it
-borrows the welcome greeting as a stand-in; once locations exist
-(\cref{ch:overview} lists them among the later chapters) it will return the
-current location's description instead.  We wire it up anyway so the contract
-and its test exist before the content does.
+The first recognised case is [[Look]].  It asks the world to describe where the
+player stands, handing off to the [[Map]]'s own [[look]] (\cref{ch:maps}) rather
+than phrasing anything itself: the engine decides \emph{that} the player looks,
+the world knows \emph{what} they see.  This single line is the injected seam
+made concrete --- [[handle]] names [[self.world.look]] without the module ever
+importing [[Map]], so a reader sees exactly how little of the world the engine
+depends on.
 
 <<command cases>>=
 case Look():
-    return [Message(localize(WELCOME, self.language))]
+    return self.world.look(self.language)
 @
 
-Let's verify both arms, and that the engine honours its language.  A [[Look]]
-is greeted in the engine's language --- Swedish by default, English when so
-configured --- which checks the known-command path and proves the language is
-a real seam rather than a hard-coded default:
+To exercise the known-command path we need a world for the engine to look at,
+but \emph{which} world is exactly what the seam hides.  So the tests supply a
+stand-in that implements only the two methods the engine ever calls on a world
+--- [[look]] and [[move]] --- and has each echo the language it was handed.
+That this stub is enough to drive the engine is the architectural claim made
+executable: the engine depends on this tiny interface, not on [[Map]].
 
 <<test [[game.py]]>>=
 import inspect
@@ -216,12 +229,33 @@ import maventyr.game
 from maventyr.game import *
 
 
-def test_look_is_greeted_in_default_language():
-    assert Engine().handle(Look()) == [Message(WELCOME["sv"])]
+class _StubWorld:
+    """A stand-in world exposing only what the engine calls on it.
+
+    Each method echoes the language it is handed, so a test can check that the
+    engine forwards its own ``language`` rather than a hard-coded default.
+    """
+
+    def look(self, language=DEFAULT_LANGUAGE):
+        return [Message(f"omkring [{language}]")]
+
+    def move(self, direction, language=DEFAULT_LANGUAGE):
+        return [Message(f"mot {direction} [{language}]")]
+@
+
+A [[Look]] returns whatever the world describes, in the engine's language ---
+Swedish by default and English when so configured, which proves the language is
+a real seam carried through to the world rather than fixed in the engine:
+
+<<test [[game.py]]>>=
+def test_look_describes_the_world():
+    world = _StubWorld()
+    assert Engine(world).handle(Look()) == world.look("sv")
 
 
-def test_look_is_greeted_in_configured_language():
-    assert Engine(language="en").handle(Look()) == [Message(WELCOME["en"])]
+def test_look_is_localized_to_the_engines_language():
+    world = _StubWorld()
+    assert Engine(world, language="en").handle(Look()) == world.look("en")
 @
 
 An unhandled command falls through to the wildcard and yields the
@@ -237,7 +271,7 @@ def test_unknown_command_is_not_understood():
 
 
 def test_handle_returns_a_list_of_events():
-    events = Engine().handle(Look())
+    events = Engine(_StubWorld()).handle(Look())
     assert isinstance(events, list)
     assert all(isinstance(event, Event) for event in events)
 @
@@ -541,4 +575,143 @@ def test_unknown_command_is_answered_with_localized_help():
     [english] = Engine(language="en").handle(Unknown("dansa"))
     assert "go" in english.text
     assert english.text != reply.text
+@
+
+\section{Driving the game}
+
+Everything so far handles \emph{one} command.  A game is the loop that does so
+turn after turn: show the player the room, read the line they type, report what
+happened, and repeat until they leave.  Putting that loop \emph{here}, in the
+core, is the one rule paying off a second time (\cref{ch:overview}).  The
+control flow --- greet once, describe the room, parse each line, dispatch it,
+stop on quit --- is game logic, not presentation, so it belongs where it can be
+tested without a screen; the terminal frontend and the command-line entry point
+of later chapters then shrink to the one thing only they can do, doing the
+input and output the core refuses to.  The loop reads no keyboard and prints
+nothing: it takes the lines as an argument and returns the events as a list.
+
+Returning the whole transcript only at the end makes [[run]] a \emph{batch}
+driver: it fits a scripted test, or any caller that already has every line in
+hand, but not an interactive terminal, which must show each turn before it can
+read the next.  That frontend reuses the loop's per-turn core --- [[parse]] then
+[[handle]] --- and renders between the two; the control flow is the same one
+proven here, only the moment of rendering moves.  So this chapter delivers the
+logic of play once, and the interactive loop of a later chapter is a thin
+re-timing of it rather than a second implementation.
+
+\subsection{The two commands the loop still needs}
+
+The loop leans on two commands the engine has not yet handled, and they have
+waited for this section on purpose.%
+\ltnote{%
+  [[Look]]'s case sits up in the engine section, but [[Go]] and [[Quit]]'s wait
+  until here, beside the loop that needs them.  The early section shows the
+  dispatch \emph{shape} with the one command the reader had met; adding the rest
+  there would force the [[Go]] and [[Quit]] types ahead of the parser that
+  motivates them.  A case earns its place where its need is felt --- just as the
+  parser introduced each verb where the verb table first mapped a word to it.
+}
+[[Go]] is the other half of movement: where [[Look]] asks the world to describe
+the current room, [[Go]] asks it to \emph{walk} an exit.  The [[Map]] already
+does that work --- resolving the typed direction to an exit token and returning
+the move's events (\cref{ch:maps}) --- so the engine only forwards the word the
+player typed and its own language, adding nothing.  In particular it does not
+resolve \enquote{north} or \enquote{norrut} to a token: that is the world's job,
+and duplicating it here would be a second place to keep in step.
+
+<<command cases>>=
+case Go(direction):
+    return self.world.move(direction, self.language)
+@
+
+[[Quit]] is the loop's off switch.  Leaving is a fact about the session, not the
+labyrinth, so the command touches no world; the engine answers with a localized
+farewell and the loop, recognising the command it has just parsed, stops after
+this turn.  Routing even the goodbye through an [[Event]] upholds the rule that
+every line the player reads is born in the engine.  The farewell is a constant
+directory beside its one use, like every other user-facing string:
+
+<<constants>>=
+FAREWELL = {
+    "sv": "Hej då!",
+    "en": "Goodbye!",
+}
+@
+
+<<command cases>>=
+case Quit():
+    return [Message(localize(FAREWELL, self.language))]
+@
+
+\subsection{The loop}
+
+[[run]] is the headless heart.  It greets the player once, shows the room they
+begin in, then drives each line down the full input path --- [[parse]] to a
+command, [[handle]] to its events --- gathering every event into one transcript
+it returns.  The greeting lives here, not in [[Look]], because it is said once
+on entering the game rather than each time the player looks around.  The opening
+description, though, \emph{is} a look, so the loop issues the same [[Look]] the
+player can rather than calling the world a second way: the [[Look]] case stays
+the one place that maps looking to the world, which keeps the two in step when a
+later chapter makes looking do more --- discovering the room, say
+(\cref{ch:overview}).  Parsing happens inside the loop, at the input boundary,
+so the loop has the command in hand and can stop the instant it is a [[Quit]]:
+the player's own \enquote{sluta} ends the game, and any line typed after it is
+never read.
+
+<<engine methods>>=
+def run(self, lines):
+    """Drive a headless game over ``lines``, returning the transcript.
+
+    Greets the player, describes the starting location, then parses and
+    handles each line of input in turn, collecting every event, until a
+    ``Quit`` command (or the lines run out). Reads no input and prints
+    nothing: a frontend supplies the lines and renders the returned events.
+    """
+    events = [Message(localize(WELCOME, self.language)), *self.handle(Look())]
+    for line in lines:
+        command = parse(line, self.language)
+        events += self.handle(command)
+        if isinstance(command, Quit):
+            break
+    return events
+@
+
+Let us check the two new cases, then the whole loop.  A [[Go]] hands the typed
+direction and the engine's language straight to the world, adding nothing of its
+own:
+
+<<test [[game.py]]>>=
+def test_go_walks_the_world_in_the_engines_language():
+    world = _StubWorld()
+    engine = Engine(world, language="en")
+    assert engine.handle(Go("north")) == world.move("north", "en")
+@
+
+A [[Quit]] is answered with the farewell, localized like every other reply, and
+without needing a world at all:
+
+<<test [[game.py]]>>=
+def test_quit_is_answered_with_a_localized_farewell():
+    assert Engine().handle(Quit()) == [Message(FAREWELL["sv"])]
+    assert Engine(language="en").handle(Quit()) == [Message(FAREWELL["en"])]
+@
+
+Finally the acceptance: a scripted sequence of lines drives a whole game with no
+user interface in sight.  The transcript opens with the welcome and the starting
+room, then carries each command's events in order and ends with the farewell ---
+and because the loop stops on \enquote{sluta}, the \enquote{titta} typed after
+it never runs, so its [[look]] does not appear:
+
+<<test [[game.py]]>>=
+def test_a_scripted_sequence_drives_a_headless_game():
+    world = _StubWorld()
+    transcript = Engine(world).run(["titta", "gå norr", "sluta", "titta"])
+    assert transcript == [
+        Message(WELCOME["sv"]),
+        *world.look("sv"),
+        *world.look("sv"),
+        *world.move("norr", "sv"),
+        Message(FAREWELL["sv"]),
+    ]
 @
