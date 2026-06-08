@@ -30,25 +30,36 @@ later command plugs into.%
   between them last.
 }
 
-We assemble the module from named buckets, as the package root does, but this
-is the first chapter to need an [[imports]] bucket and a [[classes]] bucket,
-so we introduce them here.  The module docstring restates the one rule for a
-reader who opens [[game.py]] without the woven document beside it.
+We assemble the module from named buckets, as the package root does.  The
+engine needs the first [[imports]] and [[classes]] buckets, so they appear
+here; the parser later in this chapter also brings module-level [[functions]]
+and a [[verb registry]], which we list in the assembly now and fill where each
+is explained.  The [[functions]] precede the [[classes]] and the registry
+follows them, mirroring the Locations chapter (\cref{ch:locations}): a function
+calls the classes only at run time, while the registry names them as it is
+built, so it must tangle after they exist.  The module docstring restates the
+one rule for a reader who opens [[game.py]] without the woven document beside
+it.
 
 <<[[game.py]]>>=
 """The presentation-agnostic game core.
 
-Defines the Command and Event types and the Engine that maps commands to
-events.  This module imports no user interface and calls neither ``print``
-nor ``input``: a frontend turns player input into a Command, hands it to the
-Engine, and renders the Events the Engine returns.
+Defines the Command and Event types, the parser that turns a line of text
+into a Command, and the Engine that maps commands to events.  This module
+imports no user interface and calls neither ``print`` nor ``input``: a
+frontend parses player input into a Command, hands it to the Engine, and
+renders the Events the Engine returns.
 """
 
 <<imports>>
 
 <<constants>>
 
+<<functions>>
+
 <<classes>>
+
+<<verb registry>>
 @
 
 The engine reuses the package-level language machinery
@@ -158,33 +169,39 @@ class Engine:
 \subsection{Handling a command}
 
 [[handle]] is the whole command\,$\to$\,events contract in one method: a
-command goes in, a list of events comes out.  We dispatch with a [[match]]
-statement because adding a command later means adding a [[case]] --- the
-structure is the extension point every future chapter reuses, and pattern
-matching binds a command's fields in the same step that selects it.
-
-The known arm is a placeholder for now.  Until there is a world to describe,
-[[Look]] borrows the welcome greeting as a stand-in; once locations exist
-(\cref{ch:overview} lists them among the later chapters) it will return the
-current location's description instead.  We wire the arm up anyway so the
-contract and its test exist before the content does.
-
-The wildcard arm is deliberate.  A command whose type the engine does not yet
-implement is not an error to crash on but a feature not built --- so the
-engine replies, in the player's language, that it did not understand, and the
-game plays on.  This is a different concern from the parser's job of
-rejecting unparseable \emph{text}: by the time a command reaches [[handle]]
-it is already a well-formed [[Command]]; the wildcard catches \emph{kinds} of
-command the engine has no rule for yet.
+command goes in, a list of events comes out.  We dispatch with a [[match]] and
+keep the recognised cases in their own [[command cases]] bucket: a later
+chapter adds a command by appending a [[case]] there, never by editing this
+method --- the extension point the chapter promised --- and pattern matching
+binds a command's fields in the same step that selects it.
 
 <<engine methods>>=
 def handle(self, command):
     """Return the list of events produced by ``command``."""
     match command:
-        case Look():
-            return [Message(localize(WELCOME, self.language))]
+        <<command cases>>
         case _:
             return [Message(localize(DONT_UNDERSTAND, self.language))]
+@
+
+The wildcard arm is deliberate.  A command whose type the engine does not yet
+implement is not an error to crash on but a feature not built --- so the
+engine replies, in the player's language, that it did not understand, and the
+game plays on.  This is a different concern from the parser's job of rejecting
+unparseable \emph{text}: by the time a command reaches [[handle]] it is already
+a well-formed [[Command]]; the wildcard catches \emph{kinds} of command the
+engine has no rule for yet, while the parser's own failure --- met further down
+this chapter --- is a line that named no command at all.
+
+The first recognised case is [[Look]].  Until there is a world to describe it
+borrows the welcome greeting as a stand-in; once locations exist
+(\cref{ch:overview} lists them among the later chapters) it will return the
+current location's description instead.  We wire it up anyway so the contract
+and its test exist before the content does.
+
+<<command cases>>=
+case Look():
+    return [Message(localize(WELCOME, self.language))]
 @
 
 Let's verify both arms, and that the engine honours its language.  A [[Look]]
@@ -236,4 +253,292 @@ def test_core_calls_no_print_or_input():
     source = inspect.getsource(maventyr.game)
     assert "print(" not in source
     assert "input(" not in source
+@
+
+\section{Parsing player input}
+
+The engine speaks Commands, but a player at a terminal types a \emph{line of
+text}.  Something must bridge the two, and that bridge is the parser: it reads a
+line and returns the [[Command]] it names, so a frontend's whole input path is
+[[parse]] then [[Engine.handle]].  Parsing is the counterpart of the rule that
+keeps the core mute (\cref{ch:overview}) --- the core never reads the keyboard,
+so a separate, testable function turns whatever the keyboard produced into the
+core's own vocabulary, with no [[input]] call anywhere in sight.%
+\ltnote{%
+  We introduce the rest of the command family \emph{here}, beside the parser
+  that produces them, rather than back in the Commands section with [[Look]].
+  Each command earns its place the moment the verb table maps a word to it, so
+  the reader meets [[Go]] when they meet \enquote{gå} --- the type and its
+  reason to exist arrive together, at the parser's point of need.
+}
+
+\subsection{The rest of the command vocabulary}
+
+Most verbs carry one piece of text: a direction to walk, an item to take, a
+character to talk to, a thing to use, an answer to submit.  They share a shape
+--- a single string field --- and differ only in what that string \emph{means},
+which the field name records.  We give each its own type rather than a generic
+[[Command(verb, arg)]] for the reason [[Look]] is already a type and not a
+string: the engine matches on the kind and reads a named field, so a future
+[[Go]] case binds [[direction]] in the same step that selects it.
+
+<<classes>>=
+@dataclass(frozen=True)
+class Go(Command):
+    """Move the player one step in a direction."""
+
+    direction: str
+
+
+@dataclass(frozen=True)
+class Take(Command):
+    """Pick up a named item in the current location."""
+
+    item: str
+
+
+@dataclass(frozen=True)
+class Talk(Command):
+    """Begin talking to a named character."""
+
+    target: str
+
+
+@dataclass(frozen=True)
+class Use(Command):
+    """Use a named item."""
+
+    item: str
+
+
+@dataclass(frozen=True)
+class Answer(Command):
+    """Submit ``text`` as the answer to a posed question."""
+
+    text: str
+@
+
+The remaining verbs carry nothing: showing the map, saving, and quitting are
+whole intentions on their own.  [[ShowMap]] takes that name rather than [[Map]]
+to leave the labyrinth's [[Map]] type (\cref{ch:maps}) unambiguous --- one is a
+request to draw, the other the world it asks about.
+
+<<classes>>=
+@dataclass(frozen=True)
+class ShowMap(Command):
+    """Request a drawing of the discovered map."""
+
+
+@dataclass(frozen=True)
+class Save(Command):
+    """Request that the game be saved."""
+
+
+@dataclass(frozen=True)
+class Quit(Command):
+    """Request to leave the game."""
+@
+
+One command stands apart: the parser's answer when a line names no verb it
+knows.  [[Unknown]] is not something the player asked for but something the
+parser could not place, and it carries the original [[text]] so the engine can
+react to it.  Routing failure through a command, rather than returning an event
+straight from the parser, is what keeps every [[Event]] born in the engine: the
+parser's one job stays \enquote{text in, [[Command]] out}, and the engine
+remains the sole author of what the player is told.
+
+<<classes>>=
+@dataclass(frozen=True)
+class Unknown(Command):
+    """A line the parser could not turn into a known command.
+
+    Carries the original ``text`` so the engine can answer with help.
+    """
+
+    text: str
+@
+
+\subsection{A registry of verbs}
+
+To turn a word into a command we need a table from spelling to command.  It is
+the mirror of the direction registry (\cref{ch:locations}): [[DIRECTIONS]] is
+\emph{keyed} by a fixed token because the program looks a direction up by token,
+whereas a verb is looked up \emph{by} the player's localized word, which is not
+fixed, so the verb table is a list to scan rather than a dict to index.  Each
+entry pairs the spellings a verb may take in each language with the command to
+build and whether it consumes the rest of the line as an argument.
+
+<<classes>>=
+@dataclass(frozen=True)
+class VerbSpec:
+    """One verb: its spellings, the command it builds, and its arity.
+
+    ``words`` is a ``{language: [spelling, ...]}`` directory; ``command`` is
+    the Command subclass to construct; ``takes_argument`` says whether the
+    rest of the line is passed to that constructor.
+    """
+
+    words: dict
+    command: type
+    takes_argument: bool = False
+
+    def spellings(self, language=DEFAULT_LANGUAGE):
+        """Return this verb's casefolded spellings in ``language``."""
+        return [word.casefold() for word in localize(self.words, language)]
+@
+
+The registry seeds one entry per verb the game understands, ordered as a help
+message would list them.  The argument-taking verbs (\enquote{gå},
+\enquote{ta}, \dots) pass the rest of the line on; the bare verbs
+(\enquote{karta}, \enquote{spara}, \enquote{sluta}) take nothing.  Swedish
+leads, with an English spelling beside it and room for synonyms ---
+\enquote{titta} or \enquote{se} for looking --- because this table is the one
+place a new word for an action is taught, exactly as [[DIRECTIONS]] is the one
+place a new direction is.
+
+<<verb registry>>=
+VERBS = [
+    VerbSpec({"sv": ["gå"], "en": ["go"]}, Go, takes_argument=True),
+    VerbSpec({"sv": ["titta", "se"], "en": ["look"]}, Look),
+    VerbSpec({"sv": ["ta"], "en": ["take"]}, Take, takes_argument=True),
+    VerbSpec({"sv": ["prata"], "en": ["talk"]}, Talk, takes_argument=True),
+    VerbSpec({"sv": ["använd"], "en": ["use"]}, Use, takes_argument=True),
+    VerbSpec({"sv": ["svara"], "en": ["answer"]}, Answer, takes_argument=True),
+    VerbSpec({"sv": ["karta"], "en": ["map"]}, ShowMap),
+    VerbSpec({"sv": ["spara"], "en": ["save"]}, Save),
+    VerbSpec({"sv": ["sluta"], "en": ["quit"]}, Quit),
+]
+@
+
+\subsection{Parsing a line}
+
+Parsing is deliberately shallow: the first word is the verb, the rest is its
+argument.  We casefold the verb so that \enquote{Gå} and \enquote{gå} are the
+same word, scan the registry for a spec that lists it in the active language,
+and build that spec's command --- handing over the rest of the line when the
+verb takes one.  Three inputs yield [[Unknown]]: an empty line, a word no spec
+claims, and an argument-taking verb with nothing after it (a bare \enquote{ta}
+asks to take \dots\ what?).  Because the lookup runs through [[localize]], an
+unknown language still finds the Swedish spellings rather than failing.
+
+<<functions>>=
+def parse(text, language=DEFAULT_LANGUAGE):
+    """Turn a line of player ``text`` into a Command.
+
+    Reads the first word as the verb (in ``language``) and passes the rest of
+    the line as its argument when the verb takes one.  Returns ``Unknown`` for
+    an empty line, an unrecognised verb, or an argument-taking verb given no
+    argument.
+    """
+    tokens = text.split()
+    if not tokens:
+        return Unknown(text)
+    verb, *rest = tokens
+    verb = verb.casefold()
+    for spec in VERBS:
+        if verb in spec.spellings(language):
+            argument = " ".join(rest)
+            if not spec.takes_argument:
+                return spec.command()
+            return spec.command(argument) if argument else Unknown(text)
+    return Unknown(text)
+@
+
+Let us check the two arities.  A bare verb becomes its command, and the rest of
+the line --- however many words --- becomes one argument, so a multi-word item
+name or a spaced-out equation survives intact:
+
+<<test [[game.py]]>>=
+def test_parses_a_verb_with_no_argument():
+    assert parse("titta") == Look()
+    assert parse("karta") == ShowMap()
+    assert parse("spara") == Save()
+    assert parse("sluta") == Quit()
+
+
+def test_parses_a_verb_with_its_argument():
+    assert parse("gå norr") == Go("norr")
+    assert parse("ta rostig nyckel") == Take("rostig nyckel")
+    assert parse("svara x = 5") == Answer("x = 5")
+@
+
+The verb is read in the player's language and case-insensitively, and an
+unknown language falls back to the Swedish spellings rather than failing:
+
+<<test [[game.py]]>>=
+def test_parses_in_the_configured_language():
+    assert parse("go north", "en") == Go("north")
+    assert parse("look", "en") == Look()
+
+
+def test_verb_is_case_insensitive():
+    assert parse("TITTA") == Look()
+
+
+def test_unknown_language_falls_back_to_default_spellings():
+    assert parse("gå norr", "xx") == parse("gå norr", "sv")
+@
+
+Unparsable input --- nothing, an unknown verb, or a verb missing its argument
+--- becomes [[Unknown]] carrying the original line, never an exception:
+
+<<test [[game.py]]>>=
+def test_unparsable_input_becomes_unknown():
+    assert parse("") == Unknown("")
+    assert parse("dansa") == Unknown("dansa")
+    assert parse("ta") == Unknown("ta")
+@
+
+\subsection{A helpful reply to input it cannot place}
+
+An [[Unknown]] command reaching the engine is the parser saying \enquote{this
+line named no verb I know}.  The engine answers not with the terse
+not-understood line --- that one is reserved for a valid command kind it cannot
+yet act on --- but with help: the verbs the player \emph{could} have used, in
+their language.  [[known_verbs]] builds that list from the registry, taking each
+verb's first spelling so the player sees one canonical word per action rather
+than every synonym.
+
+<<functions>>=
+def known_verbs(language=DEFAULT_LANGUAGE):
+    """Return the known verbs in ``language`` as a comma-separated string."""
+    return ", ".join(spec.spellings(language)[0] for spec in VERBS)
+@
+
+<<constants>>=
+HELP = {
+    "sv": "Jag förstår inte. Försök med: {verbs}.",
+    "en": "I don't understand. Try: {verbs}.",
+}
+@
+
+The engine gains one case for it, beside the [[Look]] case in the same bucket
+and so ahead of the wildcard, so a misparse is met with guidance while a valid
+but unimplemented command still falls through to the neutral reply:
+
+<<command cases>>=
+case Unknown():
+    return [
+        Message(
+            localize(HELP, self.language).format(
+                verbs=known_verbs(self.language)
+            )
+        )
+    ]
+@
+
+The reply lists the verbs and is localized: the same misparse is answered in
+Swedish by default and in English when the engine is configured for it, and
+either way it is a single [[Message]] naming a verb the player can actually
+try:
+
+<<test [[game.py]]>>=
+def test_unknown_command_is_answered_with_localized_help():
+    [reply] = Engine().handle(Unknown("dansa"))
+    assert isinstance(reply, Message)
+    assert "gå" in reply.text
+
+    [english] = Engine(language="en").handle(Unknown("dansa"))
+    assert "go" in english.text
+    assert english.text != reply.text
 @
