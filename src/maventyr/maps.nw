@@ -66,16 +66,18 @@ interface and calls neither ``print`` nor ``input``.
 @
 
 A map needs the package's language helpers, the engine's [[Message]] event for
-what it reports, and from the Locations chapter both the [[Location]] type it
-aggregates and the direction lookup that turns a token into its player-facing
-words (\cref{ch:locations}).
+what it reports, and from the Locations chapter the [[Location]] type it
+aggregates together with two direction helpers (\cref{ch:locations}):
+[[resolve_direction]] turns the word a player typed into the token an exit is
+keyed by, and [[lookup_direction]] turns that token back into its player-facing
+words.
 
 <<imports>>=
 from dataclasses import dataclass, field
 
 from maventyr import DEFAULT_LANGUAGE, localize
 from maventyr.game import Message
-from maventyr.locations import Location, lookup_direction
+from maventyr.locations import Location, lookup_direction, resolve_direction
 @
 
 \section{The map}
@@ -191,28 +193,36 @@ def test_look_describes_the_current_location():
 
 \section{Walking the links}
 
-Moving is the chapter's reason to exist.  [[move]] asks the current location
-where a direction leads (\cref{ch:locations}); a missing exit is a wall to
-report, not an error to raise, so the map answers with a single message and
-leaves the player where they were.  Otherwise it makes the room reached the new
-[[current]] and returns the move's announcement followed by that room's
-[[look]] --- arriving and seeing the new place in one turn, as in the games
-this one descends from.
+Moving is the chapter's reason to exist.  The player names a direction in their
+own words --- \enquote{norr}, or \enquote{north} in English --- so [[move]]
+first resolves that word to the token an exit is keyed by (\cref{ch:locations}),
+which is what lets an English player walk a maze whose exits were carved with
+Swedish tokens.  It then asks the current location where that token leads; a
+missing exit is a wall to report, not an error to raise, so the map answers with
+a single message and leaves the player where they were.  Otherwise it makes the
+room reached the new [[current]] and returns the move's announcement followed by
+that room's [[look]] --- arriving and seeing the new place in one turn, as in
+the games this one descends from.  The resolved token, not the raw word, then
+flows on to the announcement, so the message phrases the move from the
+registered [[Direction]] rather than from whatever the player happened to type.
 
 <<map methods>>=
 def move(self, direction, language=DEFAULT_LANGUAGE):
     """Walk the exit ``direction`` from the current location.
 
-    Returns a message announcing the move followed by the entered room's
-    ``look``; or a single message when there is no exit that way, leaving
-    the current location unchanged.
+    ``direction`` is the word the player typed, in their language; it is
+    resolved to a canonical exit token before the exit is looked up.  Returns
+    a message announcing the move followed by the entered room's ``look``; or
+    a single message when there is no exit that way, leaving the current
+    location unchanged.
     """
-    destination = self.current.neighbor(direction)
+    token = resolve_direction(direction, language)
+    destination = self.current.neighbor(token)
     if destination is None:
         return [Message(localize(NO_EXIT, language))]
     self.current = destination
     return [
-        self.movement_message(direction, language),
+        self.movement_message(token, language),
         *destination.look(language),
     ]
 @
@@ -270,6 +280,19 @@ def test_moving_updates_current_and_appends_the_new_room_look():
 def test_movement_announcement_is_localized():
     karta, here, there = _two_room_map()
     assert karta.move("norr", "en")[0] == Message("You go north.")
+@
+
+And the resolution earns its keep: a player running the game in English walks
+the same Swedish-carved maze by typing an English direction word, reaching the
+room the Swedish token leads to:
+
+<<test [[maps.py]]>>=
+def test_an_english_direction_word_walks_the_swedish_maze():
+    karta, here, there = _two_room_map()
+    events = karta.move("north", "en")
+    assert karta.current is there
+    assert events[0] == Message("You go north.")
+    assert events[1:] == there.look("en")
 @
 
 Bumping a wall --- a direction with no exit --- reports it in one line and does

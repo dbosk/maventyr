@@ -525,3 +525,74 @@ def test_look_falls_back_to_default_language():
     here = _place()
     assert here.look("xx") == here.look(DEFAULT_LANGUAGE)
 @
+
+\section{Resolving a typed direction}
+
+[[lookup_direction]] served \emph{output} --- a token becomes the words shown to
+the player.  Movement runs the other way: it starts as a word the player
+\emph{typed} (\enquote{norr}, or \enquote{north} when the game runs in English),
+and a location keys its exits by token (\cref{ch:maps}).  Without a bridge an
+English player would type a word that matches no exit and bump every wall, even
+though the map renders perfectly in English --- the display is localized but the
+keys are not.  [[resolve_direction]] is that bridge, and the inverse of
+[[lookup_direction]]: it turns a typed word back into the token the exit table
+and the movement message both expect.
+
+It works by the same open registry, read backwards: a typed word matches a
+direction when it equals that direction's token, its name, or its adverb in the
+active language, so \enquote{norr}, \enquote{north} and \enquote{norrut} all
+resolve to the token [[norr]].  A word that matches nothing is returned
+unchanged, which is exactly right for a named exit like \enquote{dörr} or for a
+token typed directly: both are already the key their exit is stored under, so
+passing them through lets them match as they always did.  Resolution thus never
+\emph{blocks} a move --- at worst it leaves the word as it found it.
+
+<<functions>>=
+def resolve_direction(word, language=DEFAULT_LANGUAGE):
+    """Return the canonical direction token a typed ``word`` names.
+
+    Matches ``word`` against each direction's token, name, or adverb in
+    ``language`` (so ``"north"`` and ``"norrut"`` both give ``"norr"``).
+    Falls back to the casefolded ``word`` itself when nothing matches, so an
+    unregistered or named exit still resolves to a usable token.
+    """
+    word = word.casefold()
+    for token, direction in DIRECTIONS.items():
+        forms = {token.casefold(), direction.name(language).casefold()}
+        adverb = direction.adverb(language)
+        if adverb is not None:
+            forms.add(adverb.casefold())
+        if word in forms:
+            return token
+    return word
+@
+
+A compass word resolves to its token from either language and whatever its case;
+the canonical token resolves to itself even in a language whose word differs;
+and an unregistered word passes through unchanged so it can still match an exit
+keyed by that very word:
+
+<<test [[locations.py]]>>=
+def test_resolves_a_localized_word_to_its_token():
+    assert resolve_direction("norr", "sv") == "norr"
+    assert resolve_direction("norrut", "sv") == "norr"
+    assert resolve_direction("north", "en") == "norr"
+    assert resolve_direction("NORTH", "en") == "norr"
+
+
+def test_canonical_token_resolves_to_itself_in_any_language():
+    assert resolve_direction("norr", "en") == "norr"
+
+
+def test_unregistered_word_resolves_to_itself():
+    assert resolve_direction("dörr", "sv") == "dörr"
+@
+
+Resolution honours the default-language fallback like every other lookup: with
+an unknown language the registry still offers its Swedish forms, so a Swedish
+adverb resolves rather than failing:
+
+<<test [[locations.py]]>>=
+def test_resolution_falls_back_to_the_default_language():
+    assert resolve_direction("norrut", "xx") == "norr"
+@
