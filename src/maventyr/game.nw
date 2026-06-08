@@ -479,11 +479,11 @@ def test_unknown_language_falls_back_to_default_spellings():
     assert parse("gå norr", "xx") == parse("gå norr", "sv")
 @
 
-Unparsable input --- nothing, an unknown verb, or a verb missing its argument
+Unparseable input --- nothing, an unknown verb, or a verb missing its argument
 --- becomes [[Unknown]] carrying the original line, never an exception:
 
 <<test [[game.py]]>>=
-def test_unparsable_input_becomes_unknown():
+def test_unparseable_input_becomes_unknown():
     assert parse("") == Unknown("")
     assert parse("dansa") == Unknown("dansa")
     assert parse("ta") == Unknown("ta")
