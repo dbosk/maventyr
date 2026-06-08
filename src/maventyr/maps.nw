@@ -20,12 +20,17 @@ still two different mazes.
 A map aggregates locations but carries \emph{no subject}.  Which part of the
 curriculum a task belongs to rides on the individual entities a room holds ---
 an inscription posing a maths problem, a character asking a Swedish one ---
-not on the room and not on the map (\cref{ch:entities}).  This keeps the map
-purely topological and leaves the placement step (\cref{ch:overview}) free to
-\emph{mix} subjects along the player's path.%
+not on the room and not on the map (\cref{ch:entities}).  Staying
+subject-agnostic this way only \emph{permits} interleaving; the placement step
+(\cref{ch:overview}) is where it is actually realised.  Keeping the map purely
+topological is what leaves that step free to \emph{mix} subjects along the
+player's path.%
 \ltnote{%
-  The map only \emph{permits} interleaving by staying subject-agnostic; the
-  placement step (\cref{ch:overview}) is where it is actually realised.
+  We raise \enquote{no subject} \emph{here}, alongside the data model, rather
+  than in the placement and maze chapters that exploit it.  The reader meets the
+  constraint while the [[Map]] is still fresh, so that the later
+  \enquote{interleave the subjects} reads as the payoff of a decision already
+  understood instead of a fact reverse-engineered from the generator.
 }
 
 Mixing subjects within one labyrinth is a deliberate choice, not an accident of
