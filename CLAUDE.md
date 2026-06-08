@@ -39,11 +39,13 @@ makefiles/      # SUBMODULE: shared noweb/tex/subdir build rules (dbosk/makefile
 didactic/       # SUBMODULE: pedagogical LaTeX package (dbosk/didactic)
 ```
 
-The package grows one `.nw` chapter per concern (entities, locations, maps,
-game, render, questions, persistence, curriculum, didactics, content,
-ui_terminal, ui_web, cli), each added by its own issue and `\input` into
-`doc/maventyr.nw` in reading order. Keep that chapter list and this file in
-sync when structure changes.
+The package grows one `.nw` chapter per concern (the `game` engine first, then
+the world models `entities`, `locations`, `maps`, then `render`, `questions`,
+`persistence`, `curriculum`, `didactics`, `content`, `ui_terminal`, `ui_web`,
+`cli`), each added by its own issue and `\input` into `doc/maventyr.nw` in
+reading order. The engine leads because the world models return the events it
+defines, so the reader meets that vocabulary first. Keep that chapter list and
+this file in sync when structure changes.
 
 ## Build & test
 

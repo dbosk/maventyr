@@ -21,14 +21,14 @@ later chapter has a working scaffold to attach to.
 
 Two interfaces are required of [[maventyr]]: a terminal version (the
 [[play]] subcommand) and a browser version (the [[serve]] subcommand).  A
-program that scatters \texttt{print} and \texttt{input} through its game logic
+program that scatters [[print]] and [[input]] through its game logic
 can support exactly one of these, and bolting on the second means a rewrite.
 
 We therefore adopt a single, load-bearing rule:
 
 \begin{quotation}
-  The game core never imports a user interface and never calls \texttt{print}
-  or \texttt{input}.
+  The game core never imports a user interface and never calls [[print]]
+  or [[input]].
 \end{quotation}
 
 The core instead exposes state and a \emph{command\,$\to$\,events} interface:
@@ -58,18 +58,29 @@ content sits on top of all of it.
     grades answers through a per-subject grader (\texttt{sympy} for
     mathematics), and \texttt{persistence} saves and restores the world
     between runs.
-  \item[Interfaces] \texttt{ui\_terminal}, \texttt{ui\_web}, and \texttt{cli}
-    are the thin frontends and entry point --- the only place \texttt{print},
+  \item[Interfaces] [[ui_terminal]], [[ui_web]], and [[cli]]
+    are the thin frontends and entry point --- the only place [[print]],
     HTTP, and argument parsing live.
   \item[Content] \texttt{curriculum} and \texttt{didactics} decide which task
     to pose and how it is authored, and \texttt{content} loads the swappable
     on-disk database whose language sets the game's language.
 \end{description}
 
-Each of these is introduced by its own issue and added as a sibling chapter;
-the document wrapper in \texttt{doc/} \texttt{\textbackslash input}s them in
-reading order.  Keeping this list in step with the chapters that actually
-exist is part of the cost of any structural change.
+Each of these is introduced by its own issue and added as a sibling chapter.
+The document wrapper in \texttt{doc/} \texttt{\textbackslash input}s them in
+reading order, which puts the \texttt{game} engine \emph{first} --- ahead of
+the world models grouped above it.  The three world chapters each return the
+engine's \emph{events} (and import [[Message]] from it), so a reader needs that
+vocabulary in hand before meeting the chapters that produce it.  Keeping this
+list --- and that order --- in step with the chapters that actually exist is
+part of the cost of any structural change.%
+\ltnote{%
+  The reading order inverts the conceptual grouping: the engine sits
+  \emph{atop} the world it drives, yet its chapter is presented first.  Because
+  every world model returns the [[Event]]s the engine defines, leading with the
+  engine lets each later \cref{ch:game} point backward and spares the reader a
+  type used before it is introduced.
+}
 
 \section{The generated module}
 

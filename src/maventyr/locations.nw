@@ -345,7 +345,7 @@ class Direction:
 
     token: str
     names: dict
-    adverbs: dict = None
+    adverbs: dict | None = None
 
     def name(self, language=DEFAULT_LANGUAGE):
         """Return the direction's name in ``language`` (e.g. ``"norr"``)."""

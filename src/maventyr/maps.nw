@@ -102,8 +102,8 @@ class Map:
     id: str
     name: dict
     locations: dict = field(default_factory=dict)
-    start: Location = None
-    current: Location = None
+    start: Location | None = None
+    current: Location | None = None
 
     <<map methods>>
 @
