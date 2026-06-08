@@ -46,6 +46,7 @@
 \input{../src/maventyr/game.tex}
 \input{../src/maventyr/entities.tex}
 \input{../src/maventyr/locations.tex}
+\input{../src/maventyr/maps.tex}
 
 
 \backmatter

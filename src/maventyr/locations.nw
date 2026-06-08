@@ -37,6 +37,11 @@ language helpers and the engine's [[Message]] event, exactly as the entities
 module does, and imports nothing else --- the core still touches no user
 interface.
 
+The buckets are the usual ones, with a single twist at the end: the
+[[direction registry]] (a table of named directions introduced later) is built
+by instantiating a class, so it must be assembled \emph{after} the classes it
+uses --- hence its own bucket rather than a slot in [[constants]].
+
 <<[[locations.py]]>>=
 """World locations --- the rooms the player moves between.
 
@@ -54,6 +59,8 @@ acts.  This module imports no user interface and calls neither ``print`` nor
 <<functions>>
 
 <<classes>>
+
+<<direction registry>>
 @
 
 <<imports>>=
@@ -308,32 +315,105 @@ returns a list of events for a frontend to render --- but a place has more to
 say than a thing: what it looks like, who and what is here, and where you can
 go.  We answer with up to three lines.
 
-Before [[look]] we need to turn an exit's direction token into a word the
-player reads.  The token is a stable key --- the Swedish direction, since the
-content is Swedish-first --- and [[direction_name]] resolves it through the
-[[DIRECTIONS]] directory so the same token reads as \enquote{norr} or
-\enquote{north} as the language asks.  When a token is absent (a named exit
-like a door, or one not yet translated) it falls back to showing the token
-itself rather than failing, so a half-authored world still renders.  We make
-the helper public because the renderer will localize directions the same way.
+\subsection{Naming a direction}
 
-<<functions>>=
-def direction_name(token, language=DEFAULT_LANGUAGE):
-    """Return the player-facing name of an exit ``token``.
+Before [[look]] can list the ways out, it must turn an exit's direction token
+into words the player reads.  A token is a stable key --- the Swedish
+direction, since content is Swedish-first --- but a direction needs \emph{two}
+player-facing forms, not one: a noun to name it as an exit (\enquote{norr}) and
+an adverb to narrate moving along it (\enquote{norrut}), the latter for the
+movement message the map chapter builds (\cref{ch:maps}).  We bundle both forms
+with the token in a single [[Direction]] value so the two cannot drift apart,
+and so a location's [[look]] and a map's move can ask the \emph{same} object for
+whichever form each needs.
 
-    Resolves ``token`` through ``DIRECTIONS``, falling back to the token
-    itself when it has no entry, so a named or untranslated exit still shows.
+<<classes>>=
+@dataclass(frozen=True)
+class Direction:
+    """A way out of a location, with its localizable player-facing forms.
+
+    Holds the directories for the direction's name (the noun shown when
+    listing exits) and its adverb (used when narrating movement); ``adverbs``
+    may be ``None`` for a direction that has only a name.
     """
-    return localize(DIRECTIONS.get(token, {DEFAULT_LANGUAGE: token}), language)
+
+    token: str
+    names: dict
+    adverbs: dict = None
+
+    def name(self, language=DEFAULT_LANGUAGE):
+        """Return the direction's name in ``language`` (e.g. ``"norr"``)."""
+        return localize(self.names, language)
+
+    def adverb(self, language=DEFAULT_LANGUAGE):
+        """Return the direction's adverb in ``language``, or ``None``."""
+        return localize(self.adverbs, language) if self.adverbs else None
 @
 
-<<constants>>=
+The four compass points are the directions the maze generator carves
+(\cref{ch:maps}), so they seed the registry --- but they are only the seed.  The
+table is deliberately \emph{open}: a room may use any token it likes for a
+doorway (a named \enquote{dörr}, a portal), and teaching the game a new
+direction is just adding an entry here.  English reuses the bare compass word as
+its adverb (\enquote{you go north}); Swedish inflects it (\enquote{du går
+norrut}), which is exactly why a direction must carry the adverb separately.
+
+<<direction registry>>=
 DIRECTIONS = {
-    "norr": {"sv": "norr", "en": "north"},
-    "söder": {"sv": "söder", "en": "south"},
-    "öster": {"sv": "öster", "en": "east"},
-    "väster": {"sv": "väster", "en": "west"},
+    "norr": Direction(
+        "norr", {"sv": "norr", "en": "north"}, {"sv": "norrut", "en": "north"}
+    ),
+    "söder": Direction(
+        "söder", {"sv": "söder", "en": "south"}, {"sv": "söderut", "en": "south"}
+    ),
+    "öster": Direction(
+        "öster", {"sv": "öster", "en": "east"}, {"sv": "österut", "en": "east"}
+    ),
+    "väster": Direction(
+        "väster", {"sv": "väster", "en": "west"}, {"sv": "västerut", "en": "west"}
+    ),
 }
+@
+
+Looking a token up returns its registered [[Direction]] or, for a token with no
+entry, a fallback that simply names itself and offers no adverb --- so an
+unlisted or untranslated exit still renders rather than failing, and the
+movement message can fall back to neutral phrasing.  We keep the lookup public
+because the renderer resolves directions the same way.
+
+<<functions>>=
+def lookup_direction(token):
+    """Return the ``Direction`` for ``token``.
+
+    Falls back to a direction that names itself (and has no adverb) when the
+    token is not in ``DIRECTIONS``, so any exit token still renders.
+    """
+    return DIRECTIONS.get(token, Direction(token, {DEFAULT_LANGUAGE: token}))
+@
+
+Let us verify that a compass direction carries both forms in both languages,
+that an unknown token names itself and has no adverb, and that the name falls
+back to the default language like every other string:
+
+<<test [[locations.py]]>>=
+def test_cardinal_direction_has_a_name_and_an_adverb():
+    norr = lookup_direction("norr")
+    assert norr.name("sv") == "norr"
+    assert norr.name("en") == "north"
+    assert norr.adverb("sv") == "norrut"
+    assert norr.adverb("en") == "north"
+
+
+def test_unknown_direction_names_itself_and_has_no_adverb():
+    door = lookup_direction("dörr")
+    assert door.name("sv") == "dörr"
+    assert door.name("en") == "dörr"
+    assert door.adverb("sv") is None
+
+
+def test_direction_name_falls_back_to_default_language():
+    norr = lookup_direction("norr")
+    assert norr.name("xx") == norr.name(DEFAULT_LANGUAGE)
 @
 
 The description is unconditional --- every place looks like something.  The
@@ -365,7 +445,8 @@ def look(self, language=DEFAULT_LANGUAGE):
         events.append(Message(localize(HERE, language).format(items=items)))
     if self.exits:
         dirs = ", ".join(
-            direction_name(token, language) for token in self.directions()
+            lookup_direction(token).name(language)
+            for token in self.directions()
         )
         events.append(Message(localize(EXITS, language).format(dirs=dirs)))
     return events

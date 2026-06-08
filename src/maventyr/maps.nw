@@ -1,0 +1,340 @@
+\chapter{Maps}
+\label{ch:maps}
+
+A \emph{map} is the labyrinth itself: a collection of locations
+(\cref{ch:locations}) wired into a graph, with a marker for where the player
+currently stands.  The Locations chapter built rooms that each know their own
+doorways but deliberately left movement undone --- \enquote{Movement is the map
+chapter's job} (\cref{ch:locations}).  This chapter is that job: the map
+\emph{walks} the links a location only stores, and remembers the room the walk
+has reached.
+
+The contrast with a location is the whole point.  A [[Location]] is local
+knowledge --- one room, its contents, the directions leading out.  A [[Map]] is
+the global view --- every room of one labyrinth and, crucially, the single
+\emph{current} location that turns a static graph into a player moving through
+it.  Like a location it is mutable and compared by identity: the player's
+position changes as they walk, and two labyrinths with identical rooms are
+still two different mazes.
+
+A map aggregates locations but carries \emph{no subject}.  Which part of the
+curriculum a task belongs to rides on the individual entities a room holds ---
+an inscription posing a maths problem, a character asking a Swedish one ---
+not on the room and not on the map (\cref{ch:entities}).  This keeps the map
+purely topological and leaves the placement step (\cref{ch:overview}) free to
+\emph{mix} subjects along the player's path.%
+\ltnote{%
+  The map only \emph{permits} interleaving by staying subject-agnostic; the
+  placement step (\cref{ch:overview}) is where it is actually realised.
+}
+
+Mixing subjects within one labyrinth is a deliberate choice, not an accident of
+generation, and it is worth recording why.  Interleaved practice --- mixing
+problem kinds rather than blocking one kind at a time --- improves retention and
+the ability to choose the right method, largely because it spaces repeated
+encounters with each
+topic~\autocite{taylor2010interleaved,rohrer2015interleaved,cepeda2006distributed}.
+A long stretch of a single subject also risks the \enquote{boredom channel},
+where too little novelty disengages the
+learner~\autocite{csikszentmihalyi1990flow}, whereas variety can trigger the
+situational interest that grows into durable individual
+interest~\autocite{hidi2006interest} --- the on-ramp for a least-favourite
+subject.  The honest caveat is that the sharpest interleaving gains are measured
+\emph{within} a subject (discriminating similar problem types); \emph{across}
+subjects the benefit is better attributed to spacing and motivation.  Keeping
+subject off the map is what makes that interleaving possible at all.
+
+<<[[maps.py]]>>=
+"""Maps --- labyrinths of locations the player walks through.
+
+A Map aggregates the locations of one labyrinth and tracks the player's
+current location, turning the links a Location stores into movement.  Like a
+Location it is mutable and compared by identity.  This module imports no user
+interface and calls neither ``print`` nor ``input``.
+"""
+
+<<imports>>
+
+<<constants>>
+
+<<classes>>
+@
+
+A map needs the package's language helpers, the engine's [[Message]] event for
+what it reports, and from the Locations chapter both the [[Location]] type it
+aggregates and the direction lookup that turns a token into its player-facing
+words (\cref{ch:locations}).
+
+<<imports>>=
+from dataclasses import dataclass, field
+
+from maventyr import DEFAULT_LANGUAGE, localize
+from maventyr.game import Message
+from maventyr.locations import Location, lookup_direction
+@
+
+\section{The map}
+
+The fields are the aggregate and the marker.  [[id]] and [[name]] identify and
+name the labyrinth, as for every other model.  [[locations]] holds the rooms
+keyed by their [[id]] --- a mapping, not a list, because the renderer and the
+saved game refer to a room by its identifier (\cref{ch:overview}) and lookup by
+id is what they will need.  [[start]] is where the player enters and [[current]]
+is where they are now; both begin empty and are filled as rooms are added.
+
+<<classes>>=
+@dataclass(eq=False, repr=False)
+class Map:
+    """A labyrinth of locations with a tracked current position.
+
+    Aggregates the locations of one map (keyed by id) and remembers the
+    player's current location.  Mutable and compared by identity, like the
+    Location nodes it holds.
+    """
+
+    id: str
+    name: dict
+    locations: dict = field(default_factory=dict)
+    start: Location = None
+    current: Location = None
+
+    <<map methods>>
+@
+
+As with a location, we silence the generated [[repr]] and name the map by its
+[[id]]: a map's fields reach into the whole graph of rooms, so the default
+representation would walk the labyrinth instead of identifying it.
+
+<<map methods>>=
+def __repr__(self):
+    return f"Map({self.id!r})"
+@
+
+\section{Building the labyrinth}
+
+The maze generator (\cref{ch:overview}) creates and links locations, then hands
+them to a map.  [[add_location]] registers each under its [[id]]; the
+\emph{first} room added also becomes the [[start]] and the [[current]] position,
+so a freshly built map always has somewhere for the player to be without a
+separate \enquote{place the player} step.  The generator therefore adds the
+entrance first.
+
+<<map methods>>=
+def add_location(self, location):
+    """Register ``location``; the first one added becomes the start."""
+    self.locations[location.id] = location
+    if self.start is None:
+        self.start = location
+        self.current = location
+@
+
+Our tests build little maps out of linked rooms, so a pair of helpers keeps
+each one short: [[_room]] makes a described location, and [[_two_room_map]]
+wires two of them north--south into a map.  Because the entrance is added
+first, it is the map's start and the player's current location.
+
+<<test [[maps.py]]>>=
+from maventyr.maps import *
+from maventyr.locations import Location, lookup_direction
+from maventyr.game import Event, Message
+
+
+def _room(id, **overrides):
+    fields = dict(
+        name={"sv": f"rum {id}", "en": f"room {id}"},
+        description={"sv": f"Rum {id}.", "en": f"Room {id}."},
+    )
+    fields.update(overrides)
+    return Location(id=id, **fields)
+
+
+def _two_room_map():
+    here = _room("a")
+    there = _room("b")
+    here.connect("norr", "söder", there)
+    karta = Map(id="karta", name={"sv": "kartan", "en": "the map"})
+    karta.add_location(here)
+    karta.add_location(there)
+    return karta, here, there
+
+
+def test_first_location_added_becomes_the_start():
+    karta, here, there = _two_room_map()
+    assert karta.start is here
+    assert karta.current is here
+@
+
+\section{Looking around}
+
+A map shows the player their surroundings by delegating to the current
+location: the map knows \emph{where} the player is, and the location knows what
+that place looks like (\cref{ch:locations}).  [[look]] adds nothing of its own
+--- keeping a room's description defined in exactly one place --- it only points
+the location's own [[look]] at the current room.
+
+<<map methods>>=
+def look(self, language=DEFAULT_LANGUAGE):
+    """Return events describing the player's current location."""
+    return self.current.look(language)
+@
+
+<<test [[maps.py]]>>=
+def test_look_describes_the_current_location():
+    karta, here, there = _two_room_map()
+    assert karta.look("sv") == here.look("sv")
+@
+
+\section{Walking the links}
+
+Moving is the chapter's reason to exist.  [[move]] asks the current location
+where a direction leads (\cref{ch:locations}); a missing exit is a wall to
+report, not an error to raise, so the map answers with a single message and
+leaves the player where they were.  Otherwise it makes the room reached the new
+[[current]] and returns the move's announcement followed by that room's
+[[look]] --- arriving and seeing the new place in one turn, as in the games
+this one descends from.
+
+<<map methods>>=
+def move(self, direction, language=DEFAULT_LANGUAGE):
+    """Walk the exit ``direction`` from the current location.
+
+    Returns a message announcing the move followed by the entered room's
+    ``look``; or a single message when there is no exit that way, leaving
+    the current location unchanged.
+    """
+    destination = self.current.neighbor(direction)
+    if destination is None:
+        return [Message(localize(NO_EXIT, language))]
+    self.current = destination
+    return [
+        self.movement_message(direction, language),
+        *destination.look(language),
+    ]
+@
+
+<<constants>>=
+NO_EXIT = {
+    "sv": "Du kan inte gå dit.",
+    "en": "You can't go that way.",
+}
+@
+
+The announcement is where a [[Direction]]'s two forms earn their keep.  A
+direction with an adverb reads naturally as the act of moving --- \enquote{Du
+går norrut.} --- so we use it whenever one is present.  A named exit without an
+adverb (the cross-map \enquote{dörr}, before anyone gives it one) would mangle
+that sentence, so it falls back to heading \emph{towards} the exit's name.  An
+author who wants natural phrasing for such an exit need only give its
+[[Direction]] an adverb (say \enquote{in i portalen}), and it flows through the
+first template instead --- the open registry (\cref{ch:locations}) is the seam
+that makes this an authoring choice rather than a code change.
+
+<<map methods>>=
+def movement_message(self, direction, language=DEFAULT_LANGUAGE):
+    """Return the ``Message`` announcing travel in ``direction``."""
+    way = lookup_direction(direction)
+    adverb = way.adverb(language)
+    if adverb is not None:
+        return Message(localize(MOVE, language).format(adverb=adverb))
+    return Message(localize(TOWARDS, language).format(name=way.name(language)))
+@
+
+<<constants>>=
+MOVE = {
+    "sv": "Du går {adverb}.",
+    "en": "You go {adverb}.",
+}
+TOWARDS = {
+    "sv": "Du går mot {name}.",
+    "en": "You head for {name}.",
+}
+@
+
+A step north updates the current location and returns the adverb-shaped
+announcement ahead of the new room's own description, in the player's language:
+
+<<test [[maps.py]]>>=
+def test_moving_updates_current_and_appends_the_new_room_look():
+    karta, here, there = _two_room_map()
+    events = karta.move("norr", "sv")
+    assert karta.current is there
+    assert events[0] == Message("Du går norrut.")
+    assert events[1:] == there.look("sv")
+
+
+def test_movement_announcement_is_localized():
+    karta, here, there = _two_room_map()
+    assert karta.move("norr", "en")[0] == Message("You go north.")
+@
+
+Bumping a wall --- a direction with no exit --- reports it in one line and does
+not move the player:
+
+<<test [[maps.py]]>>=
+def test_bumping_a_wall_reports_it_and_stays_put():
+    karta, here, there = _two_room_map()
+    events = karta.move("väster", "sv")
+    assert events == [Message("Du kan inte gå dit.")]
+    assert karta.current is here
+@
+
+A named exit with no adverb takes the \enquote{towards} phrasing rather than a
+mangled sentence, while still moving the player through it:
+
+<<test [[maps.py]]>>=
+def test_a_named_exit_without_an_adverb_heads_towards_it():
+    here = _room("a")
+    annex = _room("b")
+    here.link("dörr", annex)
+    karta = Map(id="k", name={"sv": "k", "en": "k"})
+    karta.add_location(here)
+    karta.add_location(annex)
+    assert karta.move("dörr", "sv")[0] == Message("Du går mot dörr.")
+    assert karta.current is annex
+@
+
+[[look]] tracks the player: after a move it describes the room just entered.
+And whatever happens, [[move]] honours the core's contract --- it returns a list
+of [[Event]]s, and an unknown language falls back to the default rather than
+failing:
+
+<<test [[maps.py]]>>=
+def test_look_follows_the_player_after_a_move():
+    karta, here, there = _two_room_map()
+    karta.move("norr", "sv")
+    assert karta.look("sv") == there.look("sv")
+
+
+def test_move_returns_a_list_of_events():
+    karta, here, there = _two_room_map()
+    events = karta.move("norr")
+    assert isinstance(events, list)
+    assert all(isinstance(event, Event) for event in events)
+
+
+def test_move_falls_back_to_the_default_language():
+    moved = _two_room_map()[0].move("norr", "xx")
+    default = _two_room_map()[0].move("norr", DEFAULT_LANGUAGE)
+    assert moved == default
+@
+
+Finally the cross-map claim from the Locations chapter, now walked: a link can
+lead into a room held by a \emph{different} map, and moving along it simply makes
+that foreign room the current one.  No special machinery is needed --- the exit
+is an object reference like any other (\cref{ch:locations}); \emph{which} map the
+player is then \enquote{in} is a question for the loop that owns the player
+(\cref{ch:overview}), not for the map walking the link.
+
+<<test [[maps.py]]>>=
+def test_walking_a_cross_map_link_enters_the_other_maps_room():
+    cave = _room("grotta")
+    hall = _room("sal")
+    cave.link("dörr", hall)
+    karta_a = Map(id="a", name={"sv": "a", "en": "a"})
+    karta_a.add_location(cave)
+    karta_b = Map(id="b", name={"sv": "b", "en": "b"})
+    karta_b.add_location(hall)
+    karta_a.move("dörr")
+    assert karta_a.current is hall
+    assert hall in karta_b.locations.values()
+@

@@ -23,3 +23,5 @@ _minted*
 *.vrb
 pythontex-files-*/
 *.pytxcode
+*.unq
+*-SAVE-ERROR

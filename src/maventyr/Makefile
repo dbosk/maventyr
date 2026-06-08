@@ -4,6 +4,7 @@ MODULES+=	__init__.py maventyr.tex
 MODULES+=	game.py game.tex
 MODULES+=	entities.py entities.tex
 MODULES+=	locations.py locations.tex
+MODULES+=	maps.py maps.tex
 
 .PHONY: all
 all: ${MODULES}
