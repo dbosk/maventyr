@@ -273,7 +273,13 @@ the one interaction that differs.  The other three keep their safe defaults, so
 a subclass is never obliged to reimplement what it does not change, and adding a
 future interaction to the base will not break it.  This is the primary way the
 game will grow interesting entities; the canned defaults above are the floor it
-builds on.
+builds on.%
+\ltnote{%
+  We present subclassing last, after all four canned interactions, so the reader
+  has already watched every safe default in action.  Overriding then reads as
+  \enquote{replace one of these} rather than as an abstract extension point met
+  before the behaviour it replaces.
+}
 
 We verify the pattern with a gatekeeper that answers talk with its own coded
 line, and confirm that an interaction it did \emph{not} override still falls

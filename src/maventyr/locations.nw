@@ -325,7 +325,13 @@ an adverb to narrate moving along it (\enquote{norrut}), the latter for the
 movement message the map chapter builds (\cref{ch:maps}).  We bundle both forms
 with the token in a single [[Direction]] value so the two cannot drift apart,
 and so a location's [[look]] and a map's move can ask the \emph{same} object for
-whichever form each needs.
+whichever form each needs.%
+\ltnote{%
+  [[Direction]] is a second type, yet we introduce it here --- where [[look]]
+  first needs to name an exit --- rather than up front beside [[Location]].  The
+  chapter's spine stays on the location; the reader meets directions only once
+  the narrative has raised the question they answer.
+}
 
 <<classes>>=
 @dataclass(frozen=True)

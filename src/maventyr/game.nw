@@ -22,7 +22,13 @@ text or HTML.  At this milestone the world is still empty --- locations,
 items and maps arrive in later chapters --- so the engine can do little.
 What it must do correctly \emph{now} is establish the
 \emph{command\,$\to$\,events} contract and the dispatch shape that every
-later command plugs into.
+later command plugs into.%
+\ltnote{%
+  We define the Command and Event families before the engine that maps between
+  them.  The engine's contract only reads clearly once both its input and output
+  vocabularies are in hand, so the two data types come first and the function
+  between them last.
+}
 
 We assemble the module from named buckets, as the package root does, but this
 is the first chapter to need an [[imports]] bucket and a [[classes]] bucket,
