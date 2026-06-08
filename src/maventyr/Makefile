@@ -2,6 +2,7 @@ NOTANGLEFLAGS.py=
 
 MODULES+=	__init__.py maventyr.tex
 MODULES+=	game.py game.tex
+MODULES+=	entities.py entities.tex
 
 .PHONY: all
 all: ${MODULES}

@@ -1,0 +1,301 @@
+\chapter{Entities}
+\label{ch:entities}
+
+An \emph{entity} is anything in the world the player can act on: a character to
+talk to, an item to pick up, a horse that wanders.  Following the Overview
+(\cref{ch:overview}), all of these are one base structure rather than a
+hierarchy of separate character and item classes --- a horse is simply an
+entity that talks and cannot be taken, a key one that can.
+
+Where this chapter earns its design is in separating three things that pull in
+different directions:
+
+\begin{description}
+  \item[Content] is \emph{data} --- an entity's name, description, and the
+    lines it speaks.  It is authored, translated, and eventually loaded from a
+    swappable on-disk database, so it must stay inert and serialisable.
+  \item[Behaviour] is \emph{code} --- how an entity responds to being looked
+    at, talked to, used, or taken.  Canned text covers the simple cases, but a
+    gatekeeper who poses a riddle needs a real method, so behaviour lives in
+    overridable methods that subclasses can specialise.
+  \item[State] is \emph{neither} --- whether a conversation has already
+    happened, what the player did last time.  It is mutable and must survive
+    between runs, so it belongs to the saved game state --- owned by the loop
+    and persistence chapters that come later --- keyed by an entity's stable
+    [[id]], not stored on the entity itself.
+\end{description}
+
+Keeping these apart is what lets one entity be cheap data, gain coded behaviour
+by subclassing, and remember the player across sessions, without any one
+concern entangling the others.  This chapter builds the content-and-behaviour
+half: an immutable [[Entity]] whose four interaction methods return
+\emph{events} for a frontend to render, exactly as the engine does
+(\cref{ch:game}).  The state half arrives with the loop and persistence that
+own it.
+
+The module gathers the usual buckets.  Its events come from the engine chapter
+and its language helpers from the package root, so those are the only imports.
+
+<<[[entities.py]]>>=
+"""World entities --- one structure for characters and items.
+
+An Entity carries immutable content (name, description, dialogue) and answers
+the player's interactions (look/talk/use/take) by returning events.  Simple
+entities are pure data; richer ones subclass and override an interaction.
+This module imports no user interface and calls neither ``print`` nor
+``input``.
+"""
+
+<<imports>>
+
+<<constants>>
+
+<<classes>>
+@
+
+<<imports>>=
+from dataclasses import dataclass
+
+from maventyr import DEFAULT_LANGUAGE, localize
+from maventyr.game import Message
+@
+
+\section{The entity}
+
+An entity is a frozen dataclass: its content never changes once authored, and
+freezing says so in the type.  The fields are the content the game and the
+on-disk database supply; the methods, defined in the sections that follow, are
+the behaviour.
+
+The [[id]] comes first and carries no display role --- it is the stable handle
+by which everything else refers to this entity: the location that holds it, the
+saved game state that records what the player has done with it, and the content
+database that will one day construct it.  [[name]] is the short label shown when
+an entity is listed or taken; [[description]] is what looking at it reveals.
+The remaining fields are optional because they distinguish a character from an
+item purely by data: a thing with [[dialogue]] is someone to talk to, a thing
+that is [[takeable]] is something to pick up, and a thing with a
+[[use_response]] is something to use.
+
+<<classes>>=
+@dataclass(frozen=True)
+class Entity:
+    """A character or item the player can interact with.
+
+    Holds immutable, localizable content; the look/talk/use/take methods turn
+    that content into events.  Subclass to give an entity coded behaviour
+    beyond its canned responses.
+    """
+
+    id: str
+    name: dict
+    description: dict
+    dialogue: dict | None = None
+    use_response: dict | None = None
+    takeable: bool = False
+
+    <<entity methods>>
+@
+
+\subsection{Looking}
+
+Looking is the one interaction every entity supports, because every entity has
+a description.  There is nothing to decide --- return the description,
+localized.
+
+<<entity methods>>=
+def look(self, language=DEFAULT_LANGUAGE):
+    """Return the entity's description as an event for the player."""
+    return [Message(localize(self.description, language))]
+@
+
+We return a one-element list rather than a bare event so every interaction
+shares the engine's command\,$\to$\,events shape: a richer entity can later
+answer with several events without changing the interface.
+
+To keep the tests below from restating an entity's content each time, we build
+them from a small helper and override only the field under test.  Let's verify
+a look reads the description back in the asked-for language:
+
+<<test [[entities.py]]>>=
+from maventyr.entities import *
+from maventyr.game import Event
+
+
+def _thing(**overrides):
+    fields = dict(
+        id="thing",
+        name={"sv": "saken", "en": "the thing"},
+        description={"sv": "En vanlig sak.", "en": "An ordinary thing."},
+    )
+    fields.update(overrides)
+    return Entity(**fields)
+
+
+def test_look_returns_description():
+    thing = _thing()
+    assert thing.look("sv") == [Message(thing.description["sv"])]
+    assert thing.look("en") == [Message(thing.description["en"])]
+@
+
+\subsection{Talking}
+
+Talking is the first interaction that can come up empty: an item has nothing to
+say.  We treat an absent [[dialogue]] not as an error but as a quiet entity, and
+answer with a shared fallback line.  This is the safe default that makes
+subclassing cheap later --- a subclass overrides [[talk]] only when it has
+something more interesting to say than \enquote{nothing}.
+
+<<constants>>=
+NO_RESPONSE = {
+    "sv": "Den säger ingenting.",
+    "en": "It says nothing.",
+}
+@
+
+<<entity methods>>=
+def talk(self, language=DEFAULT_LANGUAGE):
+    """Return what the entity says, or a fallback if it has no dialogue."""
+    if self.dialogue is None:
+        return [Message(localize(NO_RESPONSE, language))]
+    return [Message(localize(self.dialogue, language))]
+@
+
+A character returns its line; a thing with no dialogue returns the fallback:
+
+<<test [[entities.py]]>>=
+def test_talk_returns_dialogue_when_present():
+    horse = _thing(dialogue={"sv": "Gnägg!", "en": "Neigh!"})
+    assert horse.talk("sv") == [Message("Gnägg!")]
+
+
+def test_talk_falls_back_when_silent():
+    assert _thing().talk("sv") == [Message(NO_RESPONSE["sv"])]
+@
+
+\subsection{Taking}
+
+Taking is the only interaction that wants to change the world --- the item
+should leave the room and join the player.  But there is no room and no
+inventory yet (\cref{ch:overview} places them in later chapters), so here
+[[take]] only reports the outcome; the actual move waits for the world that
+holds one.  What it \emph{can} decide now, from data alone, is whether the
+attempt is even allowed: [[takeable]] is what separates a key from a horse.
+
+<<constants>>=
+CANNOT_TAKE = {
+    "sv": "Du kan inte ta {name}.",
+    "en": "You can't take {name}.",
+}
+TAKEN = {
+    "sv": "Du tar {name}.",
+    "en": "You take {name}.",
+}
+@
+
+The responses name the entity so the sentence reads naturally; the [[name]]
+field is authored as a noun phrase that drops into the template
+(\enquote{Du tar nyckeln}).
+
+<<entity methods>>=
+def take(self, language=DEFAULT_LANGUAGE):
+    """Return the result of trying to take the entity.
+
+    Reports success or refusal only; moving it into an inventory waits for
+    the world that has one.
+    """
+    name = localize(self.name, language)
+    template = TAKEN if self.takeable else CANNOT_TAKE
+    return [Message(localize(template, language).format(name=name))]
+@
+
+A takeable thing is taken; anything else is refused, in the player's language:
+
+<<test [[entities.py]]>>=
+def test_take_succeeds_when_takeable():
+    key = _thing(name={"sv": "nyckeln", "en": "the key"}, takeable=True)
+    assert key.take("sv") == [Message("Du tar nyckeln.")]
+
+
+def test_take_refused_when_not_takeable():
+    horse = _thing(name={"sv": "hästen", "en": "the horse"})
+    assert horse.take("en") == [Message("You can't take the horse.")]
+@
+
+\subsection{Using}
+
+Using mirrors talking: most entities do nothing in particular when used, and
+those that do carry a [[use_response]].  The same safe-default shape keeps the
+door open for subclasses whose use has real effects later.
+
+<<constants>>=
+NOTHING_HAPPENS = {
+    "sv": "Inget händer.",
+    "en": "Nothing happens.",
+}
+@
+
+<<entity methods>>=
+def use(self, language=DEFAULT_LANGUAGE):
+    """Return the entity's use response, or a fallback if it has none."""
+    if self.use_response is None:
+        return [Message(localize(NOTHING_HAPPENS, language))]
+    return [Message(localize(self.use_response, language))]
+@
+
+<<test [[entities.py]]>>=
+def test_use_returns_response_when_present():
+    wand = _thing(use_response={"sv": "Det gnistrar.", "en": "It sparkles."})
+    assert wand.use("en") == [Message("It sparkles.")]
+
+
+def test_use_falls_back_when_inert():
+    assert _thing().use("sv") == [Message(NOTHING_HAPPENS["sv"])]
+@
+
+Whatever the interaction, it returns a list of events --- the shape the engine
+and both frontends rely on:
+
+<<test [[entities.py]]>>=
+def test_interactions_return_lists_of_events():
+    thing = _thing()
+    for events in (thing.look(), thing.talk(), thing.take(), thing.use()):
+        assert isinstance(events, list)
+        assert all(isinstance(event, Event) for event in events)
+@
+
+\section{Behaviour by subclassing}
+
+Canned responses only reach so far: a character who poses a riddle, grades an
+answer, or remembers the player needs real code.  Because behaviour lives in
+methods, that case needs no new machinery --- subclass [[Entity]] and override
+the one interaction that differs.  The other three keep their safe defaults, so
+a subclass is never obliged to reimplement what it does not change, and adding a
+future interaction to the base will not break it.  This is the primary way the
+game will grow interesting entities; the canned defaults above are the floor it
+builds on.
+
+We verify the pattern with a gatekeeper that answers talk with its own coded
+line, and confirm that an interaction it did \emph{not} override still falls
+back to the safe default:
+
+<<test [[entities.py]]>>=
+def test_subclass_overrides_one_interaction():
+    class Gatekeeper(Entity):
+        CHALLENGE = {"sv": "Vem där?", "en": "Who goes there?"}
+
+        def talk(self, language=DEFAULT_LANGUAGE):
+            return [Message(localize(self.CHALLENGE, language))]
+
+    guard = Gatekeeper(
+        id="gatekeeper",
+        name={"sv": "väktaren", "en": "the gatekeeper"},
+        description={"sv": "En sträng väktare.", "en": "A stern gatekeeper."},
+    )
+
+    assert guard.talk("sv") == [Message("Vem där?")]
+
+    # an un-overridden interaction keeps the base's safe default:
+    refused = localize(CANNOT_TAKE, "sv").format(name="väktaren")
+    assert guard.take("sv") == [Message(refused)]
+@
