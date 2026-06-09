@@ -63,6 +63,8 @@ interface and calls neither ``print`` nor ``input``.
 <<constants>>
 
 <<classes>>
+
+<<functions>>
 @
 
 A map needs the package's language helpers, the engine's [[Message]] event for
@@ -169,6 +171,280 @@ def test_first_location_added_becomes_the_start():
     karta, here, there = _two_room_map()
     assert karta.start is here
     assert karta.current is here
+@
+
+\section{Generating the labyrinth}
+
+The map above was wired a room at a time; a real game needs a labyrinth
+conjured on demand.  [[generate_maze]] is that conjurer: given a width and a
+height it returns a finished [[Map]] of that many rooms, every one reachable
+from the entrance.  It is the \emph{unit} of generation --- one finite region.
+A world that grows without end (\cref{ch:overview}) is built later by generating
+fresh regions and joining them through the cross-map links the Locations chapter
+left ready (\cref{ch:locations}); a region is finite on purpose, so that it can
+be held in memory, drawn, and saved as a whole.  And like the [[Map]] it
+returns, generation is purely topological: it decides the \emph{shape} of the
+labyrinth and nothing about \emph{difficulty}, which rides on the tasks a later
+step places in the rooms (\cref{ch:overview}) --- the same subject-free
+discipline the chapter opened with, now upheld by the generator.%
+\ltnote{%
+  Generation is presented here, between the manual [[add_location]] and the
+  [[look]]/[[move]] operations, because it is \emph{construction}: it belongs
+  beside the other way a map comes to exist, before the chapter turns to using
+  one.  The reader meets every route to a finished map together, then meets the
+  operations that act on any of them.
+}
+
+\subsection{Why a perfect maze, carved depth-first}
+
+We carve the region with a \emph{randomized depth-first search}, the procedure
+usually called the \enquote{recursive backtracker}.  Depth-first search is an
+old idea: Trémaux used it to thread a maze in the
+1880s~\autocite{lucas1882recreations}, and it was later cast as the standard
+linear-time graph traversal~\autocite{tarjan1972dfs}.  The \emph{generator} runs
+that same search backwards --- carving the passage it steps through rather than
+reading one already there --- so the procedure that \emph{solves} a maze is the
+one that \emph{builds} it.  From the entrance it walks to a random unvisited
+neighbour, carving a passage as it steps, and backtracks when it paints itself
+into a corner, until every cell has been visited exactly once.  Because each
+cell is entered once and through exactly one carved passage, the result is a
+\emph{perfect} maze: a spanning tree over the grid~\autocite{knuth2006trees},
+both connected (every room is reachable) and acyclic (exactly one path between
+any two rooms).
+That single-path property is what suits a \emph{learning} labyrinth --- progress
+is a line of rooms to be solved through, not a shortcut to be slipped around ---
+and it makes the maze cheap to verify: a tree on $N$ cells has exactly $N-1$
+passages, the witness the tests below lean on.
+
+We keep an explicit stack rather than recursing, so a large region cannot
+overflow the interpreter's call stack: the maze's size is a gameplay parameter,
+not a quantity Python's recursion limit may cap.  And the walk's only choice ---
+which neighbour to visit next --- is drawn from a seeded [[random.Random]], so a
+given seed reproduces a given maze exactly.  That determinism earns its keep
+twice: a saved game can store a region as its seed alone and regenerate it on
+load instead of serialising every room (\cref{ch:overview}), and the tests can
+assert against a fixed layout.
+
+<<imports>>=
+import random
+@
+
+\subsection{The grid as data}
+
+A step on the grid is a change in coordinates paired with the exit it carves and
+the exit that leads back.  We list the four compass moves once, as data, because
+the generator is the one place that knows the grid's geometry: the Locations
+chapter made [[connect]] take the return direction as an argument precisely so
+that \enquote{which way is back} lives \emph{here}, with the code that knows
+north is the step $(0,-1)$, rather than in a [[Location]] that knows only its own
+doorways (\cref{ch:locations}).  Letting $y$ grow southward is an arbitrary but
+fixed choice; a renderer is free to orient the drawing however it likes
+(\cref{ch:overview}).
+
+<<constants>>=
+_STEPS = [
+    (0, -1, "norr", "söder"),
+    (0, 1, "söder", "norr"),
+    (1, 0, "öster", "väster"),
+    (-1, 0, "väster", "öster"),
+]
+@
+
+Every cell starts as the same neutral room, named and described by shared
+constant directories.  Keeping the rooms bare is the construction-versus-content
+split made concrete: generation shapes the topology, and the placement step that
+follows (\cref{ch:overview}) drops in the characters and inscriptions that pose
+the tasks.  A room is keyed by its coordinates so it has a stable handle the
+carver, the renderer and the saved game can all name (\cref{ch:locations}); that
+coordinate id is also the single breadcrumb of geometry the bare graph keeps,
+enough for a later renderer to recover the layout without a [[Location]] having
+to carry a position it does not otherwise need.
+
+<<constants>>=
+ROOM_NAME = {"sv": "en gång i labyrinten", "en": "a passage in the labyrinth"}
+ROOM_DESCRIPTION = {
+    "sv": "En gång i labyrinten, med väggar av grå sten.",
+    "en": "A passage in the labyrinth, with walls of grey stone.",
+}
+MAZE_NAME = {"sv": "labyrinten", "en": "the labyrinth"}
+@
+
+<<functions>>=
+def _maze_room(x, y):
+    return Location(id=f"{x},{y}", name=ROOM_NAME, description=ROOM_DESCRIPTION)
+@
+
+\subsection{The generator}
+
+The function reads as its three phases: lay out the rooms, carve the passages
+between them, and gather the result into a map.
+
+<<functions>>=
+def generate_maze(width, height, seed=None, id="labyrint", name=None):
+    """Return a fully-connected maze Map of ``width`` by ``height`` rooms.
+
+    The maze is carved by a seeded randomized depth-first search, so it is a
+    perfect maze: every room is reachable from the start and there is exactly
+    one path between any two rooms.  Passing the same ``seed`` reproduces the
+    same maze.  The room at coordinates (0, 0) is the entrance, and becomes
+    the map's start and current location.
+    """
+    <<build the grid of rooms>>
+    <<carve passages with a randomized depth-first search>>
+    <<assemble the rooms into a map, entrance first>>
+@
+
+We lay out every cell as an unconnected room up front, rather than creating
+rooms as the walk discovers them, so the carver can look up any neighbour by
+coordinate --- and so a cell the walk never \emph{starts} from is still a real
+room waiting to be linked into.
+
+<<build the grid of rooms>>=
+rooms = {
+    (x, y): _maze_room(x, y)
+    for x in range(width)
+    for y in range(height)
+}
+@
+
+The walk carries a stack --- the path back to the entrance --- and a set of the
+cells already visited.  At the cell on top of the stack it gathers the
+neighbours still unvisited and inside the grid; finding none, it has reached a
+dead end and pops back; otherwise it picks one at random, carves the two-way
+passage to it, marks it visited and steps onto it.  Carving only ever \emph{into}
+an unvisited cell is exactly what guarantees the tree: a passage is added once
+per cell beyond the first, so no cycle can close and no cell is left unreached.
+
+<<carve passages with a randomized depth-first search>>=
+rng = random.Random(seed)
+start = (0, 0)
+visited = {start}
+stack = [start]
+while stack:
+    x, y = stack[-1]
+    options = [
+        (dx, dy, token, back)
+        for dx, dy, token, back in _STEPS
+        if (x + dx, y + dy) in rooms and (x + dx, y + dy) not in visited
+    ]
+    if not options:
+        stack.pop()
+        continue
+    dx, dy, token, back = rng.choice(options)
+    neighbour = (x + dx, y + dy)
+    rooms[(x, y)].connect(token, back, rooms[neighbour])
+    visited.add(neighbour)
+    stack.append(neighbour)
+@
+
+Finally the rooms become a map.  We add the entrance \emph{first} so that
+[[add_location]] makes it the start and the player's position with no separate
+step (\cref{ch:maps}); the rest follow in a fixed coordinate order, so that even
+the [[locations]] dictionary is reproducible for a given size.  A caller may name
+the region --- the distinct regions of a larger world will --- and otherwise it
+takes the neutral default.
+
+<<assemble the rooms into a map, entrance first>>=
+labyrint = Map(id=id, name=name if name is not None else MAZE_NAME)
+labyrint.add_location(rooms[start])
+for coord in sorted(rooms):
+    if coord != start:
+        labyrint.add_location(rooms[coord])
+return labyrint
+@
+
+The acceptance makes three claims; we verify each.  First, the region has
+exactly the rooms requested:
+
+<<test [[maps.py]]>>=
+def test_generated_maze_has_the_requested_number_of_rooms():
+    maze = generate_maze(4, 5, seed=1)
+    assert len(maze.locations) == 4 * 5
+@
+
+Next, \enquote{fully connected}: walking the carved passages from the entrance
+reaches every room.  We follow exits with a flood fill and count what we touch:
+
+<<test [[maps.py]]>>=
+def _reachable_from(start):
+    seen = set()
+    stack = [start]
+    while stack:
+        room = stack.pop()
+        if room in seen:
+            continue
+        seen.add(room)
+        stack.extend(room.exits.values())
+    return seen
+
+
+def test_every_room_is_reachable_from_the_start():
+    maze = generate_maze(6, 6, seed=2)
+    assert len(_reachable_from(maze.start)) == len(maze.locations)
+@
+
+Reachability alone would also hold for a maze riddled with loops; that we built
+a \emph{perfect} one --- a tree --- is the sharper claim, and it has a tidy
+witness.  A tree on $N$ nodes has $N-1$ edges, and each two-way passage appears
+as one exit at each of its ends, so the exits should total exactly $2(N-1)$:
+
+<<test [[maps.py]]>>=
+def test_the_maze_is_a_tree_with_one_path_between_rooms():
+    width, height = 5, 4
+    maze = generate_maze(width, height, seed=3)
+    passages = sum(len(room.exits) for room in maze.locations.values())
+    assert passages == 2 * (width * height - 1)
+@
+
+Determinism is the second half of the acceptance, and we pin both directions of
+it.  Comparing two mazes is less direct than it looks: the Locations chapter
+gave a [[Location]] \emph{identity} equality rather than value equality
+(\cref{ch:locations}), so two separately generated mazes --- distinct objects
+throughout --- would never test equal even when they are the same labyrinth.  We
+therefore compare a \emph{structural fingerprint} instead: each room keyed by its
+id, mapping every exit token to the neighbour's id.  That captures the shape the
+seed determines while sidestepping object identity entirely:
+
+<<test [[maps.py]]>>=
+def _structure(maze):
+    return {
+        room_id: {token: dest.id for token, dest in room.exits.items()}
+        for room_id, room in maze.locations.items()
+    }
+
+
+def test_the_same_seed_reproduces_the_same_maze():
+    assert _structure(generate_maze(5, 5, seed=7)) == _structure(
+        generate_maze(5, 5, seed=7)
+    )
+
+
+def test_different_seeds_give_different_mazes():
+    assert _structure(generate_maze(5, 5, seed=7)) != _structure(
+        generate_maze(5, 5, seed=8)
+    )
+@
+
+The entrance is wired into the map as the Building section promised: the first
+room added is both the start and the player's current location, and it is the
+room at the origin:
+
+<<test [[maps.py]]>>=
+def test_the_entrance_is_the_start_and_current_room():
+    maze = generate_maze(3, 3, seed=4)
+    assert maze.start is maze.current
+    assert maze.start is maze.locations["0,0"]
+@
+
+A degenerate one-room region is the smallest case the walk must survive: it
+finds no neighbours, pops immediately, and leaves a single room with no exits
+rather than failing:
+
+<<test [[maps.py]]>>=
+def test_a_single_room_maze_has_no_exits():
+    maze = generate_maze(1, 1, seed=0)
+    assert len(maze.locations) == 1
+    assert maze.start.exits == {}
 @
 
 \section{Looking around}
