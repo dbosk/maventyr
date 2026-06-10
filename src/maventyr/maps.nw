@@ -17,18 +17,23 @@ it.  Like a location it is mutable and compared by identity: the player's
 position changes as they walk, and two labyrinths with identical rooms are
 still two different mazes.
 
+A map is also where the labyrinth \emph{comes to life}.  A generated map
+carries the policy that furnishes a room --- fills it with things to find ---
+the first time the player reaches it (\cref{sec:furnishing}); until then a
+generated room stays bare.
+
 A map aggregates locations but carries \emph{no subject}.  Which part of the
 curriculum a task belongs to rides on the individual entities a room holds ---
 an inscription posing a maths problem, a character asking a Swedish one ---
 not on the room and not on the map (\cref{ch:entities}).  Staying
-subject-agnostic this way only \emph{permits} interleaving; the placement step
-(\cref{ch:overview}) is where it is actually realised.  Keeping the map purely
-topological is what leaves that step free to \emph{mix} subjects along the
-player's path.%
+subject-agnostic this way only \emph{permits} interleaving; the furnishing step
+(\cref{sec:furnishing}) is where it is actually realised.  Keeping the map
+purely topological is what leaves that step free to \emph{mix} subjects along
+the player's path.%
 \ltnote{%
   We raise \enquote{no subject} \emph{here}, alongside the data model, rather
-  than in the placement and maze chapters that exploit it.  The reader meets the
-  constraint while the [[Map]] is still fresh, so that the later
+  than in the generator and furnishing sections that exploit it.  The reader
+  meets the constraint while the [[Map]] is still fresh, so that the later
   \enquote{interleave the subjects} reads as the payoff of a decision already
   understood instead of a fact reverse-engineered from the generator.
 }
@@ -75,6 +80,7 @@ keyed by, and [[lookup_direction]] turns that token back into its player-facing
 words.
 
 <<imports>>=
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from maventyr import DEFAULT_LANGUAGE, localize
@@ -91,6 +97,16 @@ saved game refer to a room by its identifier (\cref{ch:overview}) and lookup by
 id is what they will need.  [[start]] is where the player enters and [[current]]
 is where they are now; both begin empty and are filled as rooms are added.
 
+Two further fields make the map more than geography.  [[populate]] is the
+labyrinth's furnishing policy: a callable the maze generator binds
+(\cref{sec:furnishing}) and the map applies to a room the first time the
+player reaches it.  A hand-built map leaves it [[None]] and stays exactly as
+authored --- the field is what distinguishes a labyrinth that furnishes itself
+from one an author already furnished.  [[visited]] is the set of rooms the
+player has reached; it is what makes that furnishing happen exactly once, and
+the identity semantics of \cref{ch:locations} are precisely what let mutable
+rooms sit in such a set.
+
 <<classes>>=
 @dataclass(eq=False, repr=False)
 class Map:
@@ -98,7 +114,8 @@ class Map:
 
     Aggregates the locations of one map (keyed by id) and remembers the
     player's current location.  Mutable and compared by identity, like the
-    Location nodes it holds.
+    Location nodes it holds.  A generated map carries a ``populate`` policy
+    that furnishes each room the first time the player reaches it.
     """
 
     id: str
@@ -106,6 +123,8 @@ class Map:
     locations: dict = field(default_factory=dict)
     start: Location | None = None
     current: Location | None = None
+    populate: Callable | None = None
+    visited: set = field(default_factory=set)
 
     <<map methods>>
 @
@@ -184,9 +203,9 @@ fresh regions and joining them through the cross-map links the Locations chapter
 left ready (\cref{ch:locations}); a region is finite on purpose, so that it can
 be held in memory, drawn, and saved as a whole.  And like the [[Map]] it
 returns, generation is purely topological: it decides the \emph{shape} of the
-labyrinth and nothing about \emph{difficulty}, which rides on the tasks a later
-step places in the rooms (\cref{ch:overview}) --- the same subject-free
-discipline the chapter opened with, now upheld by the generator.%
+labyrinth and nothing about \emph{difficulty}, which rides on the tasks the
+furnishing step places in the rooms (\cref{sec:furnishing}) --- the same
+subject-free discipline the chapter opened with, now upheld by the generator.%
 \ltnote{%
   Generation is presented here, between the manual [[add_location]] and the
   [[look]]/[[move]] operations, because it is \emph{construction}: it belongs
@@ -252,8 +271,8 @@ _STEPS = [
 
 Every cell starts as the same neutral room, named and described by shared
 constant directories.  Keeping the rooms bare is the construction-versus-content
-split made concrete: generation shapes the topology, and the placement step that
-follows (\cref{ch:overview}) drops in the characters and inscriptions that pose
+split made concrete: generation shapes the topology, and the furnishing step
+that follows (\cref{sec:furnishing}) drops in the things that pose
 the tasks.  A room is keyed by its coordinates so it has a stable handle the
 carver, the renderer and the saved game can all name (\cref{ch:locations}); that
 coordinate id is also the single breadcrumb of geometry the bare graph keeps,
@@ -287,7 +306,9 @@ def generate_maze(width, height, seed=None, id="labyrint", name=None):
     perfect maze: every room is reachable from the start and there is exactly
     one path between any two rooms.  Passing the same ``seed`` reproduces the
     same maze.  The room at coordinates (0, 0) is the entrance, and becomes
-    the map's start and current location.
+    the map's start and current location.  Rooms start bare: each is
+    furnished by the map's ``populate`` policy the first time the player
+    reaches it.
     """
     <<build the grid of rooms>>
     <<carve passages with a randomized depth-first search>>
@@ -344,12 +365,20 @@ the [[locations]] dictionary is reproducible for a given size.  A caller may nam
 the region --- the distinct regions of a larger world will --- and otherwise it
 takes the neutral default.
 
+One more thing leaves the generator with the map: the name of its furnishing
+policy.  The generator itself places nothing --- generation stays topological
+--- but it is the only code that holds the seed, so it is here that seed and
+policy must be bound together for the map to apply room by room as the player
+arrives.  The chunk is defined in \cref{sec:furnishing}, beside the policy it
+binds.
+
 <<assemble the rooms into a map, entrance first>>=
 labyrint = Map(id=id, name=name if name is not None else MAZE_NAME)
 labyrint.add_location(rooms[start])
 for coord in sorted(rooms):
     if coord != start:
         labyrint.add_location(rooms[coord])
+<<name the labyrinth's populator>>
 return labyrint
 @
 
@@ -447,17 +476,267 @@ def test_a_single_room_maze_has_no_exits():
     assert maze.start.exits == {}
 @
 
+\section{Furnishing the rooms}
+\label{sec:furnishing}
+
+The generator left every room deliberately bare; this section is the
+furnishing step the chapter has kept promising.  The obvious design ---
+furnish every room as part of generation --- is the one we reject, and the
+reason is the player.  The curriculum work of a later milestone will pitch a
+room's content at the player's level \emph{as it is when they arrive}
+(\cref{ch:overview}) --- the challenge-matching that keeps a learner in the
+flow channel~\autocite{csikszentmihalyi1990flow} --- and a level read at
+generation time would be stale by the time the player has walked there.  So a
+room is furnished \emph{lazily}, the moment the player first reaches it.
+
+Laziness has a consequence for saving the game that is worth fixing in print
+before any code: because furnishing may one day read player state, what it
+produces is \emph{materialised game state} for the persistence chapter to
+record (\cref{ch:overview}).  A seed alone can regenerate the topology, but it
+cannot replay what the player's own arrival created.
+
+\subsection{Placeholder furniture}
+
+Until the question and content chapters arrive (\cref{ch:overview}), the
+furniture is subject-free flavour --- the same placeholder discipline as the
+rooms' own names.  The prototypes are ordinary [[Entity]] values: frozen,
+authored content exactly as the Entities chapter prescribes
+(\cref{ch:entities}).  Frozen content would be perfectly safe to share ---
+yet placement stamps a \emph{copy} under a room-scoped id, because the id is
+the stable handle the engine and the saved game grip an entity by: two
+pebbles in two rooms must answer to two names, or what the player did to one
+would be remembered of both.
+One prototype is takeable so that the inventory work of a later milestone
+finds something liftable already in the maze.
+
+Furnishing needs three more tools: [[Entity]] itself --- the first time this
+module touches content rather than geography --- [[replace]] to stamp a
+prototype into its room-scoped copy, and [[functools.partial]] to bind the
+seed into the policy the map carries.
+
+<<imports>>=
+import functools
+from dataclasses import replace
+
+from maventyr.entities import Entity
+@
+
+<<constants>>=
+FLAVOUR_PROTOTYPES = [
+    Entity(
+        id="inskrift",
+        name={"sv": "en inskrift", "en": "an inscription"},
+        description={
+            "sv": "Någon har ristat tecken i stenväggen.",
+            "en": "Someone has carved signs into the stone wall.",
+        },
+    ),
+    Entity(
+        id="fackla",
+        name={"sv": "en fladdrande fackla", "en": "a flickering torch"},
+        description={
+            "sv": "En fackla fladdrar i sin järnhållare.",
+            "en": "A torch flickers in its iron holder.",
+        },
+    ),
+    Entity(
+        id="sten",
+        name={"sv": "en glittrande sten", "en": "a glittering pebble"},
+        description={
+            "sv": "En liten sten som glittrar i mörkret.",
+            "en": "A small pebble that glitters in the dark.",
+        },
+        takeable=True,
+    ),
+]
+@
+
+\subsection{One random stream per room}
+
+The policy's randomness needs more care than the generator's did.  Because
+furnishing is lazy, rooms are furnished in whatever order the player explores
+--- and a single random stream consumed room by room would make a room's
+contents depend on how many rooms were furnished \emph{before} it, that is, on
+the path the player happened to take.  The acceptance asks for the opposite:
+items distributed reproducibly for a seed.  So each room draws from its
+\emph{own} stream, keyed by the seed and the room's id together; a room's
+contents are then a function of the room and the seed alone, the same whether
+it is furnished first, last, or in a test that never walks there at all.  When
+the curriculum chapter later adds the player's level, it joins that function's
+\emph{arguments} --- the per-room stream needs no reshaping.
+
+The policy itself is modest on purpose: a coin flip decides whether the room
+holds anything, and a draw picks which prototype it holds.  Half the rooms
+stay empty so that finding something keeps the flavour of \emph{finding}.
+
+<<constants>>=
+FLAVOUR_CHANCE = 0.5
+@
+
+<<functions>>=
+def populate_room(room, seed):
+    """Furnish ``room`` with placeholder flavour, reproducibly.
+
+    Draws from a random stream keyed by ``seed`` and the room's id, so what
+    a room holds is a function of the room and the seed alone, never of the
+    order in which rooms are reached.  Places at most one flavour entity,
+    under a room-scoped id.
+    """
+    rng = random.Random(f"{seed}|{room.id}")
+    if rng.random() >= FLAVOUR_CHANCE:
+        return
+    prototype = rng.choice(FLAVOUR_PROTOTYPES)
+    room.add_entity(replace(prototype, id=f"{prototype.id}@{room.id}"))
+@
+
+This is also where the generator's deferred chunk lands: it binds a furnishing
+seed into the policy and hands the result to the map.  We draw that seed from
+the carving stream rather than passing [[seed]] through unchanged, and the
+reason is the unseeded case: [[populate_room]] keys its streams by the
+\emph{value} it is given, so a literal [[None]] would furnish every unseeded
+labyrinth identically --- room ids repeat across mazes --- even as their
+passages differed.  The same trap is why [[populate_room]] \emph{requires}
+its seed where [[generate_maze]] may omit one: there is no furnishing
+stream a missing seed could sensibly mean.  One draw from [[rng]] gives
+both cases the right behaviour: a seeded labyrinth determines its furniture
+exactly as it determines its passages, and an unseeded one stays
+unpredictable throughout.
+
+<<name the labyrinth's populator>>=
+labyrint.populate = functools.partial(populate_room, seed=rng.random())
+@
+
+Reproducibility is the acceptance, so the tests fingerprint a furnished maze
+--- each room's id mapped to the sorted ids of what it holds --- and check the
+fingerprint is a function of the seed: the same seed gives the same furniture
+even when the rooms are done in the opposite order, and a different seed gives
+different furniture.  The last test pins the \enquote{distributed} in
+\enquote{distributed along paths}: some rooms hold something, some hold
+nothing.
+
+<<test [[maps.py]]>>=
+def _furnish(maze, seed, reverse=False):
+    rooms = list(maze.locations.values())
+    for room in reversed(rooms) if reverse else rooms:
+        populate_room(room, seed)
+    return {
+        room.id: sorted(entity.id for entity in room.entities)
+        for room in maze.locations.values()
+    }
+
+
+def test_furnishing_is_reproducible_for_a_seed():
+    assert _furnish(generate_maze(5, 5, seed=11), 11) == _furnish(
+        generate_maze(5, 5, seed=11), 11
+    )
+
+
+def test_the_order_of_furnishing_does_not_matter():
+    assert _furnish(generate_maze(5, 5, seed=11), 11) == _furnish(
+        generate_maze(5, 5, seed=11), 11, reverse=True
+    )
+
+
+def test_a_different_seed_furnishes_differently():
+    assert _furnish(generate_maze(5, 5, seed=11), 11) != _furnish(
+        generate_maze(5, 5, seed=11), 12
+    )
+
+
+def test_furniture_lands_in_some_rooms_but_not_all():
+    furnished = _furnish(generate_maze(5, 5, seed=11), 11)
+    assert any(furnished.values())
+    assert not all(furnished.values())
+@
+
+\subsection{Arrival is the trigger}
+
+What remains is the moment itself: \emph{when} does a room get furnished?
+[[discover]] is the map's answer --- on the player's first arrival, and never
+again.  The method lives on the map because the map owns both halves of the
+decision: the memory ([[visited]]) that says whether this arrival is the
+first, and the policy ([[populate]]) that says what a first arrival creates.
+The [[visited]] check is what turns \enquote{furnished lazily} into
+\enquote{furnished exactly once} --- looking around twice must not stack two
+inscriptions on the same wall --- and the [[None]] guard is the authored-map
+case from the chapter's opening: a map built by hand has no policy and is
+never altered by being walked.
+
+<<map methods>>=
+def discover(self, location):
+    """Mark ``location`` reached, furnishing it on the first arrival.
+
+    Applies the map's ``populate`` policy (if any) the first time the
+    player reaches ``location``; later arrivals change nothing.
+    """
+    if location in self.visited:
+        return
+    self.visited.add(location)
+    if self.populate is not None:
+        self.populate(location)
+@
+
+Nothing calls [[discover]] yet --- the perception operations of the next two
+sections do, which is what makes arrival mean \enquote{seen}, not merely
+\enquote{stored in [[current]]}.  The tests therefore drive it the way the
+player will: a fresh maze is bare everywhere, looking around furnishes the
+entrance once and only once, walking into a room furnishes it once and only
+once, and a hand-built map comes through both untouched.
+
+<<test [[maps.py]]>>=
+def test_a_fresh_maze_is_bare_until_reached():
+    maze = generate_maze(3, 3, seed=5)
+    assert all(room.entities == [] for room in maze.locations.values())
+
+
+def test_looking_furnishes_the_entrance_exactly_once():
+    maze = generate_maze(3, 3, seed=5)
+    maze.look()
+    furniture = list(maze.start.entities)
+    assert furniture
+    maze.look()
+    assert maze.start.entities == furniture
+
+
+def test_entering_a_room_furnishes_it_exactly_once():
+    maze = generate_maze(2, 1, seed=5)
+    maze.move("öster")
+    entered = maze.current
+    furniture = list(entered.entities)
+    maze.move("väster")
+    maze.move("öster")
+    assert entered.entities == furniture
+
+
+def test_a_hand_built_map_stays_as_authored():
+    karta, here, there = _two_room_map()
+    karta.look()
+    karta.move("norr")
+    assert here.entities == [] and there.entities == []
+@
+
 \section{Looking around}
 
-A map shows the player their surroundings by delegating to the current
-location: the map knows \emph{where} the player is, and the location knows what
-that place looks like (\cref{ch:locations}).  [[look]] adds nothing of its own
---- keeping a room's description defined in exactly one place --- it only points
-the location's own [[look]] at the current room.
+A map shows the player their surroundings in two steps.  First it
+\emph{discovers} the current room --- the trigger the furnishing section
+prepared (\cref{sec:furnishing}), so that a first glance is what makes a
+generated room's contents real.  Then it delegates the describing to the
+location itself: the map knows \emph{where} the player is, the location knows
+what that place looks like (\cref{ch:locations}), and [[look]] adds no wording
+of its own, keeping a room's description defined in exactly one place.
+Hanging discovery on this one method is no accident: the engine funnels every
+look --- the opening description of a new game included --- through it
+(\cref{ch:game}), so perception and discovery cannot drift apart, with no
+second hook anywhere.
 
 <<map methods>>=
 def look(self, language=DEFAULT_LANGUAGE):
-    """Return events describing the player's current location."""
+    """Return events describing the player's current location.
+
+    Looking discovers the room: a first visit furnishes it via the map's
+    ``populate`` policy before it is described.
+    """
+    self.discover(self.current)
     return self.current.look(language)
 @
 
@@ -477,10 +756,13 @@ Swedish tokens.  It then asks the current location where that token leads; a
 missing exit is a wall to report, not an error to raise, so the map answers with
 a single message and leaves the player where they were.  Otherwise it makes the
 room reached the new [[current]] and returns the move's announcement followed by
-that room's [[look]] --- arriving and seeing the new place in one turn, as in
-the games this one descends from.  The resolved token, not the raw word, then
-flows on to the announcement, so the message phrases the move from the
-registered [[Direction]] rather than from whatever the player happened to type.
+the map's own [[look]] --- arriving and seeing the new place in one turn, as in
+the games this one descends from.  Routing the arrival through [[self.look]]
+rather than the destination's own makes entering a room \emph{perceive} it:
+the discovery that furnishes a first visit (\cref{sec:furnishing}) fires on
+walking in exactly as on looking around.  The resolved token, not the raw
+word, then flows on to the announcement, so the message phrases the move from
+the registered [[Direction]] rather than whatever the player happened to type.
 
 <<map methods>>=
 def move(self, direction, language=DEFAULT_LANGUAGE):
@@ -490,7 +772,7 @@ def move(self, direction, language=DEFAULT_LANGUAGE):
     resolved to a canonical exit token before the exit is looked up.  Returns
     a message announcing the move followed by the entered room's ``look``; or
     a single message when there is no exit that way, leaving the current
-    location unchanged.
+    location unchanged.  Entering discovers the room, like looking does.
     """
     token = resolve_direction(direction, language)
     destination = self.current.neighbor(token)
@@ -499,7 +781,7 @@ def move(self, direction, language=DEFAULT_LANGUAGE):
     self.current = destination
     return [
         self.movement_message(token, language),
-        *destination.look(language),
+        *self.look(language),
     ]
 @
 

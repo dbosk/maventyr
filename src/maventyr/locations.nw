@@ -268,7 +268,7 @@ def test_directions_are_listed_in_sorted_order():
 \section{Holding entities}
 
 The world chapter is where entities finally come and go.  [[add_entity]] is how
-the maze-population step (\cref{ch:overview}) drops a character or item into a
+the furnishing step (\cref{sec:furnishing}) drops a character or item into a
 room, and [[remove_entity]] is the other end of the [[take]] the Entities
 chapter promised but could not finish: taking a key calls this to lift it out
 of the room.  We keep [[entities]] a list rather than a set because order is
