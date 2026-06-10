@@ -20,7 +20,10 @@ still two different mazes.
 A map is also where the labyrinth \emph{comes to life}.  A generated map
 carries the policy that furnishes a room --- fills it with things to find ---
 the first time the player reaches it (\cref{sec:furnishing}); until then a
-generated room stays bare.
+generated room stays bare.  And it is the map that remembers the exploring:
+which rooms the player has visited and which they have merely glimpsed
+through a doorway --- the fog of war a renderer lifts cell by cell
+(\cref{sec:fog}).
 
 A map aggregates locations but carries \emph{no subject}.  Which part of the
 curriculum a task belongs to rides on the individual entities a room holds ---
@@ -97,7 +100,7 @@ saved game refer to a room by its identifier (\cref{ch:overview}) and lookup by
 id is what they will need.  [[start]] is where the player enters and [[current]]
 is where they are now; both begin empty and are filled as rooms are added.
 
-Two further fields make the map more than geography.  [[populate]] is the
+The remaining fields make the map more than geography.  [[populate]] is the
 labyrinth's furnishing policy: a callable the maze generator binds
 (\cref{sec:furnishing}) and the map applies to a room the first time the
 player reaches it.  A hand-built map leaves it [[None]] and stays exactly as
@@ -105,7 +108,10 @@ authored --- the field is what distinguishes a labyrinth that furnishes itself
 from one an author already furnished.  [[visited]] is the set of rooms the
 player has reached; it is what makes that furnishing happen exactly once, and
 the identity semantics of \cref{ch:locations} are precisely what let mutable
-rooms sit in such a set.
+rooms sit in such a set.  [[known]] is the larger set of rooms the player has
+at least \emph{glimpsed} --- the visited rooms and the rooms their doorways
+lead to --- and it is the part of the labyrinth a renderer may draw
+(\cref{sec:fog}).
 
 <<classes>>=
 @dataclass(eq=False, repr=False)
@@ -115,7 +121,8 @@ class Map:
     Aggregates the locations of one map (keyed by id) and remembers the
     player's current location.  Mutable and compared by identity, like the
     Location nodes it holds.  A generated map carries a ``populate`` policy
-    that furnishes each room the first time the player reaches it.
+    that furnishes each room the first time the player reaches it, and the
+    map tracks which rooms are visited and which are known for rendering.
     """
 
     id: str
@@ -125,6 +132,7 @@ class Map:
     current: Location | None = None
     populate: Callable | None = None
     visited: set = field(default_factory=set)
+    known: set = field(default_factory=set)
 
     <<map methods>>
 @
@@ -662,18 +670,25 @@ inscriptions on the same wall --- and the [[None]] guard is the authored-map
 case from the chapter's opening: a map built by hand has no policy and is
 never altered by being walked.
 
+Perceiving a room also does one thing on \emph{every} arrival, first or not:
+it records what the player now sees, the fog-of-war bookkeeping deferred to
+\cref{sec:fog}.  It runs after the furnishing on purpose --- what the player
+sees must include what furnishing just created, doorways included, should a
+future policy ever open one.
+
 <<map methods>>=
 def discover(self, location):
-    """Mark ``location`` reached, furnishing it on the first arrival.
+    """Record that the player perceives ``location``.
 
-    Applies the map's ``populate`` policy (if any) the first time the
-    player reaches ``location``; later arrivals change nothing.
+    The first arrival furnishes the room via the map's ``populate``
+    policy (if any); every arrival refreshes what the player knows of
+    the maze: the room itself and the rooms its exits lead to.
     """
-    if location in self.visited:
-        return
-    self.visited.add(location)
-    if self.populate is not None:
-        self.populate(location)
+    if location not in self.visited:
+        self.visited.add(location)
+        if self.populate is not None:
+            self.populate(location)
+    <<record what the player now sees>>
 @
 
 Nothing calls [[discover]] yet --- the perception operations of the next two
@@ -923,4 +938,103 @@ def test_walking_a_cross_map_link_enters_the_other_maps_room():
     karta_a.move("dörr")
     assert karta_a.current is hall
     assert hall in karta_b.locations.values()
+@
+
+\section{Visited and known: the fog of war}
+\label{sec:fog}
+
+The walking of the last two sections leaves a trail, and a maze is only a maze
+if the drawn map follows that trail rather than revealing everything at once
+--- the \emph{fog of war}, in the genre's terms.  The trail is two different
+facts, and the renderer (\cref{ch:overview}) needs them kept apart.  A room
+the player has \emph{visited} is fully theirs: they stood in it, its contents
+were furnished and described, and the map may be drawn with it in full.  A
+room they have merely \emph{glimpsed} is different: standing next door, the
+player was told an exit leads this way (\cref{ch:locations}), so they know the
+room exists --- but not what it holds, which is still unfurnished.  Collapsing
+the two into one set loses something either way: drawing only visited rooms
+erases the frontier --- the very openings that invite the player onward ---
+while drawing every known room in full reveals contents no one has seen.  So
+[[visited]] is where the player has been, [[known]] is what they have seen,
+and the second contains the first --- strictly so as long as there is
+frontier left to explore.
+
+The bookkeeping is the chunk [[discover]] deferred to this section.  Each
+arrival adds the room itself and every room its doorways lead to ---
+[[known]] thus runs one room ahead of the player, like lamplight.  Sets make
+the refresh idempotent, so recording the same glimpse on every return visit
+costs nothing and catches a passage that did not exist the first time round.
+
+A doorway into another map is glimpsed like any other: the foreign room
+simply lands in this map's [[known]], id and all.  How --- and whether --- a
+renderer draws a cell that has no coordinates in this grid is a drawing
+decision, deferred to the render chapter with the rest of the layout
+(\cref{ch:overview}).
+
+<<record what the player now sees>>=
+self.known.add(location)
+self.known.update(location.exits.values())
+@
+
+The renderer never reads these sets directly: [[discovered]] is its whole
+window onto the map, and the acceptance's \enquote{only known cells are
+exposed to rendering} holds \emph{by construction} --- the method cannot name
+a room the player has not at least glimpsed.  It maps each known room's id to
+whether it has been visited, which is everything a drawing needs: the
+coordinate-encoded ids carry the layout (the breadcrumb the generator left),
+and the flag separates the rooms to draw in full from the frontier to draw as
+unexplored openings.
+
+<<map methods>>=
+def discovered(self):
+    """Return the discovered part of the map, for rendering.
+
+    Maps each known location's id to ``True`` if the player has visited
+    it, or ``False`` if it has only been glimpsed through a doorway.
+    Locations the player has not discovered do not appear at all.
+    """
+    return {
+        location.id: location in self.visited
+        for location in self.known
+    }
+@
+
+The tests walk a $3 \times 1$ corridor, where the carver has no choice and the
+layout is certain: the entrance, a middle room, and a far end.  Looking from
+the entrance must make the entrance visited and glimpse the middle room ---
+but not the far end, which no doorway of a visited room reaches; a revisit
+must not grow the trail; and [[discovered]] must expose exactly the known
+rooms with their flags, on a generated and a hand-built map alike:
+
+<<test [[maps.py]]>>=
+def test_visited_grows_only_on_first_arrival():
+    maze = generate_maze(3, 1, seed=0)
+    maze.look()
+    assert maze.visited == {maze.start}
+    maze.move("öster")
+    entered = maze.current
+    assert maze.visited == {maze.start, entered}
+    maze.move("väster")
+    assert maze.visited == {maze.start, entered}
+
+
+def test_known_is_the_visited_rooms_and_their_neighbours():
+    maze = generate_maze(3, 1, seed=0)
+    maze.look()
+    assert maze.known == {maze.start, maze.start.neighbor("öster")}
+    assert maze.locations["2,0"] not in maze.known
+
+
+def test_discovered_exposes_only_known_cells():
+    maze = generate_maze(3, 1, seed=0)
+    maze.look()
+    assert maze.discovered() == {"0,0": True, "1,0": False}
+    maze.move("öster")
+    assert maze.discovered() == {"0,0": True, "1,0": True, "2,0": False}
+
+
+def test_discovery_works_on_a_hand_built_map():
+    karta, here, there = _two_room_map()
+    karta.look()
+    assert karta.discovered() == {"a": True, "b": False}
 @
